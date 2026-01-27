@@ -18,7 +18,8 @@ const String _reactionSignalPrefix = "PROTOCOL_REACTION:";
 const String _typingSignalPrefix = "PROTOCOL_TYPING:";
 const String _deliveredSignalPrefix = "PROTOCOL_DELIVERED:";
 const String _readSignalPrefix = "PROTOCOL_READ:";
-const String _userLeftSignal = "PROTOCOL_USER_LEFT_ROOM"; 
+const String _userLeftSignal = "PROTOCOL_USER_LEFT_ROOM";
+const String _burnMessagePrefix = "PROTOCOL_BURN_MESSAGE:";
 
 // --- TYPING PROVIDER ---
 final typingStatusProvider = StateNotifierProvider.family<TypingNotifier, bool, String>(
@@ -56,6 +57,10 @@ class MessagesNotifier extends StateNotifier<List<ChatMessage>> {
   Timer? _refreshTimer;
   Timer? _burnTimer;
   Timer? _typingDebounce;
+  
+  Future<void> loadMessages() async {
+    await _loadMessages();
+  }
 
   MessagesNotifier(this.otherUserId, this.ref) : super([]) {
     _loadMessages();
@@ -81,10 +86,12 @@ class MessagesNotifier extends StateNotifier<List<ChatMessage>> {
     });
   }
 
+  // FIXED: Remove the isDelivered check so it always updates
   Future<void> markAsDelivered(String messageId) async {
     final msgIndex = state.indexWhere((m) => m.id == messageId);
     if (msgIndex != -1) {
       final updated = state[msgIndex].copyWith(isDelivered: true);
+      state = [for (final m in state) m.id == messageId ? updated : m];
       await MessageCache.saveMessage(updated);
       await _messageService.sendMessage(
         recipientUserId: otherUserId,
@@ -106,16 +113,42 @@ class MessagesNotifier extends StateNotifier<List<ChatMessage>> {
     }
   }
 
-  void _checkBurnedMessages() {
+  // FIXED: Properly handle burn timer with synchronization
+  void _checkBurnedMessages() async {
     final now = DateTime.now();
+    final myId = CryptoManager.instance.getUserId();
+    if (myId == null) return;
+
+    final burnedMessageIds = <String>[];
+    
     final updated = state.where((msg) {
       if (msg.burnAfterSeconds == null) return true;
       final expiry = msg.timestamp.add(Duration(seconds: msg.burnAfterSeconds!));
-      return now.isBefore(expiry);
+      final shouldBurn = now.isAfter(expiry) || now.isAtSameMomentAs(expiry);
+      
+      if (shouldBurn) {
+        burnedMessageIds.add(msg.id);
+      }
+      
+      return !shouldBurn;
     }).toList();
 
     if (updated.length != state.length) {
       state = updated;
+      
+      // Delete from cache and notify other user
+      for (final msgId in burnedMessageIds) {
+        await MessageCache.deleteMessage(msgId);
+        // Send burn signal to other user
+        try {
+          await _messageService.sendMessage(
+            recipientUserId: otherUserId,
+            messageText: "$_burnMessagePrefix$msgId",
+          );
+        } catch (e) {
+          debugPrint('Error sending burn signal: $e');
+        }
+      }
     }
   }
 
@@ -140,13 +173,15 @@ class MessagesNotifier extends StateNotifier<List<ChatMessage>> {
       await _messageService.sendMessage(recipientUserId: otherUserId, messageText: _deletionSignal);
       await MessageCache.clearConversation(myId, otherUserId);
       state = [];
-    } catch (e) { debugPrint('Delete Error: $e'); }
+    } catch (e) { 
+      debugPrint('Delete Error: $e'); 
+    }
   }
 
   Future<void> _loadMessages() async {
     try {
       final myUserId = CryptoManager.instance.getUserId()!;
-      final server = await _messageService.receiveMessages();
+      final server = await _messageService.receiveMessages('permanent_local_vault_key');
       final cached = await MessageCache.getConversation(myUserId, otherUserId);
       
       final Map<String, ChatMessage> merged = {for (var m in cached) m.id: m};
@@ -203,13 +238,26 @@ class MessagesNotifier extends StateNotifier<List<ChatMessage>> {
             continue;
           }
 
+          // Handle burn message signal from other user
+          if (text.startsWith(_burnMessagePrefix)) {
+            final id = text.replaceFirst(_burnMessagePrefix, "");
+            if (merged.containsKey(id)) {
+              merged.remove(id);
+              await MessageCache.deleteMessage(id);
+              hasChanges = true;
+            }
+            continue;
+          }
+
           // Handle Content
           if (!merged.containsKey(m.id)) {
             hasChanges = true;
             final newMsg = m.senderId == otherUserId ? m.copyWith(isDelivered: true) : m;
             merged[m.id] = newMsg;
             await MessageCache.saveMessage(newMsg);
-            if (m.senderId == otherUserId) markAsDelivered(m.id);
+            if (m.senderId == otherUserId) {
+              markAsDelivered(m.id);
+            }
           }
         }
       }
@@ -217,7 +265,9 @@ class MessagesNotifier extends StateNotifier<List<ChatMessage>> {
       if (hasChanges || merged.length != state.length) {
         state = merged.values.toList()..sort((a, b) => b.timestamp.compareTo(a.timestamp));
       }
-    } catch (e) { debugPrint('Sync Error: $e'); }
+    } catch (e) { 
+      debugPrint('Sync Error: $e'); 
+    }
   }
 
   Future<void> sendMessage(String text, {int? burnSeconds, ChatMessage? mediaMessage}) async {
@@ -257,6 +307,7 @@ class MessagesNotifier extends StateNotifier<List<ChatMessage>> {
 class ChatScreen extends ConsumerStatefulWidget {
   final String userId;
   const ChatScreen({super.key, required this.userId});
+  
   @override
   ConsumerState<ChatScreen> createState() => _ChatScreenState();
 }
@@ -277,7 +328,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
 
   @override
   void dispose() {
-    // Send leave signal before destroying
     MessageService().sendMessage(recipientUserId: widget.userId, messageText: _userLeftSignal);
     WidgetsBinding.instance.removeObserver(this);
     ScreenshotProtection.disableProtection();
@@ -303,10 +353,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
       builder: (ctx) => AlertDialog(
         title: const Text("Room Closed"),
         content: const Text("The peer has left. Conversation data wiped."),
-        actions: [TextButton(onPressed: () {
-          Navigator.pop(ctx);
-          Navigator.pop(context);
-        }, child: const Text("OK"))],
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              Navigator.pop(context);
+            }, 
+            child: const Text("OK")
+          )
+        ],
       ),
     );
   }
@@ -316,7 +371,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
     final messages = ref.watch(messagesProvider(widget.userId));
     final isTyping = ref.watch(typingStatusProvider(widget.userId));
 
-    // Monitor for remote closure
     ref.listen(messagesProvider(widget.userId), (prev, next) {
       if (next.isEmpty && prev != null && prev.isNotEmpty) {
         _showRoomClosedDialog();
@@ -330,7 +384,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
           children: [
             Text(widget.userId),
             if (isTyping)
-              const Text('typing...', style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic, color: Colors.white70)),
+              const Text(
+                'typing...', 
+                style: TextStyle(
+                  fontSize: 12, 
+                  fontStyle: FontStyle.italic, 
+                  color: Colors.white70
+                )
+              ),
           ],
         ),
         actions: [
@@ -340,14 +401,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
           ),
         ],
       ),
-      body: Column(children: [
-        Expanded(child: ListView.builder(
-          reverse: true,
-          itemCount: messages.length,
-          itemBuilder: (_, i) => _buildBubble(messages[i], messages[i].senderId == CryptoManager.instance.getUserId()),
-        )),
-        _buildInput(),
-      ]),
+      body: Column(
+        children: [
+          Expanded(
+            child: ListView.builder(
+              reverse: true,
+              itemCount: messages.length,
+              itemBuilder: (_, i) => _buildBubble(
+                messages[i], 
+                messages[i].senderId == CryptoManager.instance.getUserId()
+              ),
+            )
+          ),
+          _buildInput(),
+        ]
+      ),
     );
   }
 
@@ -382,7 +450,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
           if (m.reactions.isNotEmpty)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10),
-              child: Wrap(children: m.reactions.values.map((e) => Text(e)).toList()),
+              child: Wrap(
+                children: m.reactions.values.map((e) => Text(e)).toList()
+              ),
             ),
         ],
       ),
@@ -390,9 +460,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
   }
 
   Widget _buildStatusIcon(ChatMessage m) {
-    if (m.isRead) return const Icon(Icons.done_all, size: 14, color: Colors.lightBlueAccent);
-    if (m.isDelivered) return const Icon(Icons.done_all, size: 14, color: Colors.white70);
-    if (m.isSent) return const Icon(Icons.check, size: 14, color: Colors.white70);
+    if (m.isRead) {
+      return const Icon(Icons.done_all, size: 14, color: Colors.lightBlueAccent);
+    }
+    if (m.isDelivered) {
+      return const Icon(Icons.done_all, size: 14, color: Colors.white70);
+    }
+    if (m.isSent) {
+      return const Icon(Icons.check, size: 14, color: Colors.white70);
+    }
     return const Icon(Icons.schedule, size: 14, color: Colors.white54);
   }
 
@@ -401,11 +477,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
       return Image.memory(base64Decode(m.fileData!), width: 180);
     }
     if (m.type == MessageType.audio) {
-      return Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(Icons.play_circle, color: color),
-        const SizedBox(width: 8),
-        Text("Voice Message", style: TextStyle(color: color))
-      ]);
+      return Row(
+        mainAxisSize: MainAxisSize.min, 
+        children: [
+          Icon(Icons.play_circle, color: color),
+          const SizedBox(width: 8),
+          Text("Voice Message", style: TextStyle(color: color))
+        ]
+      );
     }
     return Text(m.text, style: TextStyle(color: color));
   }
@@ -413,72 +492,173 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
   Widget _buildInput() {
     return Container(
       padding: const EdgeInsets.all(8),
-      child: Row(children: [
-        IconButton(icon: Icon(Icons.timer, color: _mintoyTime != null ? Colors.orange : Colors.grey), onPressed: _showMintoyPicker),
-        IconButton(icon: const Icon(Icons.add), onPressed: _showAttachments),
-        Expanded(child: TextField(controller: _controller, decoration: const InputDecoration(hintText: "Aa"))),
-        IconButton(
-          icon: const Icon(Icons.send),
-          onPressed: () {
-            if (_controller.text.isNotEmpty) {
-              ref.read(messagesProvider(widget.userId).notifier).sendMessage(_controller.text, burnSeconds: _mintoyTime);
-              _controller.clear();
-            }
-          },
-        ),
-      ]),
+      child: Row(
+        children: [
+          IconButton(
+            icon: Icon(
+              Icons.timer, 
+              color: _mintoyTime != null ? Colors.orange : Colors.grey
+            ), 
+            onPressed: _showMintoyPicker
+          ),
+          IconButton(
+            icon: const Icon(Icons.add), 
+            onPressed: _showAttachments
+          ),
+          Expanded(
+            child: TextField(
+              controller: _controller, 
+              decoration: const InputDecoration(hintText: "Aa")
+            )
+          ),
+          IconButton(
+            icon: const Icon(Icons.send),
+            onPressed: () {
+              if (_controller.text.isNotEmpty) {
+                ref.read(messagesProvider(widget.userId).notifier).sendMessage(
+                  _controller.text, 
+                  burnSeconds: _mintoyTime
+                );
+                _controller.clear();
+              }
+            },
+          ),
+        ]
+      ),
     );
   }
 
   void _showMintoyPicker() {
-    showModalBottomSheet(context: context, builder: (ctx) => Column(mainAxisSize: MainAxisSize.min, children: [
-      ListTile(title: const Text("Never"), onTap: () => setState(() { _mintoyTime = null; Navigator.pop(ctx); })),
-      ListTile(title: const Text("10 Seconds"), onTap: () => setState(() { _mintoyTime = 10; Navigator.pop(ctx); })),
-      ListTile(title: const Text("1 Minute"), onTap: () => setState(() { _mintoyTime = 60; Navigator.pop(ctx); })),
-    ]));
+    showModalBottomSheet(
+      context: context, 
+      builder: (ctx) => Column(
+        mainAxisSize: MainAxisSize.min, 
+        children: [
+          ListTile(
+            title: const Text("Never"), 
+            onTap: () => setState(() { 
+              _mintoyTime = null; 
+              Navigator.pop(ctx); 
+            })
+          ),
+          ListTile(
+            title: const Text("10 Seconds"), 
+            onTap: () => setState(() { 
+              _mintoyTime = 10; 
+              Navigator.pop(ctx); 
+            })
+          ),
+          ListTile(
+            title: const Text("1 Minute"), 
+            onTap: () => setState(() { 
+              _mintoyTime = 60; 
+              Navigator.pop(ctx); 
+            })
+          ),
+        ]
+      )
+    );
   }
 
   void _showAttachments() {
-    showModalBottomSheet(context: context, builder: (ctx) => Column(mainAxisSize: MainAxisSize.min, children: [
-      ListTile(leading: const Icon(Icons.image), title: const Text("Image"), onTap: () async {
-        Navigator.pop(ctx);
-        final m = await _mediaPicker.pickImage(senderId: CryptoManager.instance.getUserId()!, recipientId: widget.userId);
-        if (m != null) ref.read(messagesProvider(widget.userId).notifier).sendMessage("", mediaMessage: m, burnSeconds: _mintoyTime);
-      }),
-      ListTile(leading: const Icon(Icons.description), title: const Text("File"), onTap: () async {
-        Navigator.pop(ctx);
-        final m = await _mediaPicker.pickFile(senderId: CryptoManager.instance.getUserId()!, recipientId: widget.userId);
-        if (m != null) ref.read(messagesProvider(widget.userId).notifier).sendMessage("", mediaMessage: m, burnSeconds: _mintoyTime);
-      }),
-      ListTile(leading: const Icon(Icons.mic), title: const Text("Voice"), onTap: () { Navigator.pop(ctx); _showVoice(); }),
-    ]));
+    showModalBottomSheet(
+      context: context, 
+      builder: (ctx) => Column(
+        mainAxisSize: MainAxisSize.min, 
+        children: [
+          ListTile(
+            leading: const Icon(Icons.image), 
+            title: const Text("Image"), 
+            onTap: () async {
+              Navigator.pop(ctx);
+              final m = await _mediaPicker.pickImage(
+                senderId: CryptoManager.instance.getUserId()!, 
+                recipientId: widget.userId
+              );
+              if (m != null) {
+                ref.read(messagesProvider(widget.userId).notifier).sendMessage(
+                  "", 
+                  mediaMessage: m, 
+                  burnSeconds: _mintoyTime
+                );
+              }
+            }
+          ),
+          ListTile(
+            leading: const Icon(Icons.description), 
+            title: const Text("File"), 
+            onTap: () async {
+              Navigator.pop(ctx);
+              final m = await _mediaPicker.pickFile(
+                senderId: CryptoManager.instance.getUserId()!, 
+                recipientId: widget.userId
+              );
+              if (m != null) {
+                ref.read(messagesProvider(widget.userId).notifier).sendMessage(
+                  "", 
+                  mediaMessage: m, 
+                  burnSeconds: _mintoyTime
+                );
+              }
+            }
+          ),
+          ListTile(
+            leading: const Icon(Icons.mic), 
+            title: const Text("Voice"), 
+            onTap: () { 
+              Navigator.pop(ctx); 
+              _showVoice(); 
+            }
+          ),
+        ]
+      )
+    );
   }
 
   void _showVoice() {
-    showDialog(context: context, builder: (ctx) => _VoiceRecorderDialog(
-      onSend: (m) => ref.read(messagesProvider(widget.userId).notifier).sendMessage("", mediaMessage: m, burnSeconds: _mintoyTime),
-      userId: widget.userId,
-    ));
+    showDialog(
+      context: context, 
+      builder: (ctx) => _VoiceRecorderDialog(
+        onSend: (m) => ref.read(messagesProvider(widget.userId).notifier).sendMessage(
+          "", 
+          mediaMessage: m, 
+          burnSeconds: _mintoyTime
+        ),
+        userId: widget.userId,
+      )
+    );
   }
 
   void _showEmojiPicker(ChatMessage m) {
-    showDialog(context: context, builder: (ctx) => AlertDialog(
-      content: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: ['👍', '❤️', '😂', '🔥'].map((e) => InkWell(
-        onTap: () {
-          ref.read(messagesProvider(widget.userId).notifier).reactToMessage(m.id, e);
-          Navigator.pop(ctx);
-        },
-        child: Text(e, style: const TextStyle(fontSize: 25)),
-      )).toList()),
-    ));
+    showDialog(
+      context: context, 
+      builder: (ctx) => AlertDialog(
+        content: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly, 
+          children: ['👍', '❤️', '😂', '🔥'].map((e) => InkWell(
+            onTap: () {
+              ref.read(messagesProvider(widget.userId).notifier).reactToMessage(m.id, e);
+              Navigator.pop(ctx);
+            },
+            child: Text(e, style: const TextStyle(fontSize: 25)),
+          )).toList()
+        ),
+      )
+    );
   }
 }
 
 class _VoiceRecorderDialog extends StatefulWidget {
   final String userId;
   final Function(ChatMessage) onSend;
-  const _VoiceRecorderDialog({required this.userId, required this.onSend});
-  @override State<_VoiceRecorderDialog> createState() => _VoiceRecorderDialogState();
+  
+  const _VoiceRecorderDialog({
+    required this.userId, 
+    required this.onSend
+  });
+  
+  @override 
+  State<_VoiceRecorderDialog> createState() => _VoiceRecorderDialogState();
 }
 
 class _VoiceRecorderDialogState extends State<_VoiceRecorderDialog> {
@@ -489,7 +669,11 @@ class _VoiceRecorderDialogState extends State<_VoiceRecorderDialog> {
   Widget build(BuildContext context) {
     return AlertDialog(
       title: const Text("Record Voice"),
-      content: Icon(_isRec ? Icons.mic : Icons.mic_none, color: _isRec ? Colors.red : Colors.grey, size: 40),
+      content: Icon(
+        _isRec ? Icons.mic : Icons.mic_none, 
+        color: _isRec ? Colors.red : Colors.grey, 
+        size: 40
+      ),
       actions: [
         ElevatedButton(
           onPressed: () async {
@@ -497,7 +681,10 @@ class _VoiceRecorderDialogState extends State<_VoiceRecorderDialog> {
               await _audio.startRecording();
               setState(() => _isRec = true);
             } else {
-              final m = await _audio.stopRecording(senderId: CryptoManager.instance.getUserId()!, recipientId: widget.userId);
+              final m = await _audio.stopRecording(
+                senderId: CryptoManager.instance.getUserId()!, 
+                recipientId: widget.userId
+              );
               if (m != null) widget.onSend(m);
               Navigator.pop(context);
             }

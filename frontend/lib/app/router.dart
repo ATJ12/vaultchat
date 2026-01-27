@@ -52,44 +52,97 @@ final routerProvider = Provider<GoRouter>((ref) {
   );
 });
 
-// Placeholder screens
+// --- UI SCREENS ---
+
 class ChatListScreen extends StatelessWidget {
   const ChatListScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('VaultChat')),
-      body: const Center(child: Text('Chat List')),
+      appBar: AppBar(
+        title: const Text('VaultChat'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () => context.push('/settings'),
+          ),
+        ],
+      ),
+      body: const Center(child: Text('Your Secure Conversations')),
       floatingActionButton: FloatingActionButton(
-        onPressed: () => context.push('/chat/alice'),
+        onPressed: () => context.push('/chat/new_user'),
         child: const Icon(Icons.add),
       ),
     );
   }
 }
 
-class OnboardingScreen extends StatelessWidget {
+class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
+
+  @override
+  State<OnboardingScreen> createState() => _OnboardingScreenState();
+}
+
+class _OnboardingScreenState extends State<OnboardingScreen> {
+  bool _isGenerating = false;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Text('Welcome to VaultChat', 
-              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: () async {
-                await CryptoManager.instance.generateIdentityKeys();
-                if (context.mounted) context.go('/');
-              },
-              child: const Text('Generate Keys & Start'),
-            ),
-          ],
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.security, size: 100, color: Colors.blue),
+              const SizedBox(height: 24),
+              const Text(
+                'Welcome to VaultChat', 
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Generate your unique OpenPGP keys to begin chatting. No personal data required.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.grey),
+              ),
+              const SizedBox(height: 40),
+              _isGenerating 
+                ? const CircularProgressIndicator()
+                : ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                    ),
+                    onPressed: () async {
+                      setState(() => _isGenerating = true);
+                      try {
+                        // Generate an anonymous ID based on time
+                        final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+                        
+                        // Satisfy OpenPGP requirements with "Ghost" data
+                        await CryptoManager.instance.generateIdentityKeys(
+                          email: 'vault_$timestamp@vaultchat.local', 
+                          passphrase: 'permanent_local_vault_key', // Hidden from user
+                        );
+
+                        if (context.mounted) context.go('/');
+                      } catch (e) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Generation Failed: $e')),
+                          );
+                        }
+                      } finally {
+                        if (mounted) setState(() => _isGenerating = false);
+                      }
+                    },
+                    child: const Text('Generate Keys & Start'),
+                  ),
+            ],
+          ),
         ),
       ),
     );
@@ -108,6 +161,7 @@ class SettingsScreen extends StatelessWidget {
           ListTile(
             leading: const Icon(Icons.privacy_tip),
             title: const Text('Privacy & Security'),
+            subtitle: const Text('Manage keys and encryption'),
             onTap: () => context.push('/settings/privacy'),
           ),
         ],

@@ -19,6 +19,10 @@ class ApiClient {
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       },
+      // Force JSON response type - this is critical!
+      responseType: ResponseType.json,
+      // Disable automatic type conversion
+      validateStatus: (status) => status != null && status < 500,
     ));
 
     // Add interceptors
@@ -30,6 +34,11 @@ class ApiClient {
         },
         onResponse: (response, handler) {
           Bootstrap.logger.d('← ${response.statusCode} ${response.requestOptions.path}');
+          
+          // Debug: Print the actual response data type and content
+          Bootstrap.logger.d('Response data type: ${response.data.runtimeType}');
+          Bootstrap.logger.d('Response data: ${response.data}');
+          
           return handler.next(response);
         },
         onError: (error, handler) {
@@ -38,6 +47,9 @@ class ApiClient {
         },
       ),
     );
+
+    // Add transformer to handle JSON properly
+    _dio.transformer = BackgroundTransformer();
   }
 
   Future<Response> get(String path, {Map<String, dynamic>? queryParameters}) {

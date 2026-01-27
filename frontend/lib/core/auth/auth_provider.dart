@@ -27,9 +27,19 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   Future<void> generateIdentity({String? customUserId}) async {
     try {
-      await CryptoManager.instance.generateIdentityKeys(userId: customUserId);
+      // 1. Create the anonymous ID
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final ghostEmail = 'vault_$timestamp@vaultchat.local';
+      final ghostPass = 'permanent_local_vault_key';
+
+      // 2. Call the manager with ALL required arguments
+      await CryptoManager.instance.generateIdentityKeys(
+        userId: customUserId, // This is optional in our manager
+        email: ghostEmail,    // This is REQUIRED
+        passphrase: ghostPass, // This is REQUIRED
+      );
       
-      // Register with backend
+      // 3. Register with backend
       await _messageService.registerCurrentUser();
       
       final userId = CryptoManager.instance.getUserId();
@@ -38,10 +48,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
       state = AuthState.error('Failed to generate identity: $e');
     }
   }
-
   Future<void> deleteIdentity() async {
     try {
-      // This will be implemented with secure storage clear
+      await CryptoManager.instance.clearKeys();
       state = const AuthState.noIdentity();
     } catch (e) {
       state = AuthState.error('Failed to delete identity: $e');

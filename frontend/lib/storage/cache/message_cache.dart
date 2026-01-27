@@ -16,6 +16,30 @@ class MessageCache {
     await _box!.put(key, message.toJson());
   }
 
+  // NEW: Delete a single message by ID
+  static Future<void> deleteMessage(String messageId) async {
+    if (_box == null) await initialize();
+    
+    final keysToDelete = <dynamic>[];
+    
+    for (var entry in _box!.toMap().entries) {
+      try {
+        final data = Map<String, dynamic>.from(entry.value as Map);
+        final message = ChatMessage.fromJson(data);
+        
+        if (message.id == messageId) {
+          keysToDelete.add(entry.key);
+        }
+      } catch (e) {
+        print('Error checking message for deletion: $e');
+      }
+    }
+    
+    for (var key in keysToDelete) {
+      await _box!.delete(key);
+    }
+  }
+
   static Future<List<ChatMessage>> getConversation(String userId1, String userId2) async {
     if (_box == null) await initialize();
     

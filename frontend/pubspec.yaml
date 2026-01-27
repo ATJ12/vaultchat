@@ -14,6 +14,7 @@ dependencies:
   # Crypto
   cryptography: ^2.7.0
   pointycastle: ^3.8.0
+  openpgp: ^3.10.7
   crypto: ^3.0.3
 
   # Network
@@ -69,6 +70,13 @@ dev_dependencies:
 flutter:
   uses-material-design: true
 
+  # 🖼️ Assets section for the WASM bridge and workers
+  assets:
+    - packages/openpgp/web/assets/worker.js
+    - packages/openpgp/web/assets/wasm_exec.js
+    - packages/openpgp/web/assets/openpgp.wasm
+
+  # 🔡 Fonts section
   fonts:
     - family: Inter
       fonts:

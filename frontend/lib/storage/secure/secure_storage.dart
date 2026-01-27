@@ -13,6 +13,7 @@ class SecureStorage {
   static const _privateKeyKey = 'identity_private_key';
   static const _publicKeyKey = 'identity_public_key';
   static const _userIdKey = 'user_id';
+  static const _passphraseKey = 'passphrase'; // ✅ ADD THIS
 
   static Future<void> initialize() async {
     // Test storage availability
@@ -51,6 +52,18 @@ class SecureStorage {
 
   static Future<String?> getUserId() async {
     return await _storage.read(key: _userIdKey);
+  }
+
+  // ✅ ADD THESE TWO METHODS
+  /// Save OpenPGP key passphrase
+  static Future<void> savePassphrase(String passphrase) async {
+    await _storage.write(key: _passphraseKey, value: passphrase);
+    print('✓ Passphrase saved');
+  }
+
+  /// Get OpenPGP key passphrase
+  static Future<String?> getPassphrase() async {
+    return await _storage.read(key: _passphraseKey);
   }
 
   // Session tokens

@@ -22,8 +22,7 @@ class ChatMessage extends Equatable {
   final String? fileName;
   final String? mimeType;
   final int? fileSize;
-  // CHANGED: Map to store userId: emoji (e.g., {"userA": "👍", "userB": "🔥"})
-  final Map<String, String> reactions; 
+  final Map<String, String> reactions;
 
   const ChatMessage({
     required this.id,
@@ -40,7 +39,7 @@ class ChatMessage extends Equatable {
     this.fileName,
     this.mimeType,
     this.fileSize,
-    this.reactions = const {}, // Default to empty map
+    this.reactions = const {},
   });
 
   ChatMessage copyWith({
@@ -95,34 +94,121 @@ class ChatMessage extends Equatable {
       'fileName': fileName,
       'mimeType': mimeType,
       'fileSize': fileSize,
-      'reactions': reactions, // Map is JSON compatible
+      'reactions': reactions,
     };
   }
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
-    return ChatMessage(
-      id: json['id'] as String,
-      text: json['text'] as String,
-      senderId: json['senderId'] as String,
-      recipientId: json['recipientId'] as String,
-      timestamp: DateTime.parse(json['timestamp'] as String),
-      isSent: json['isSent'] as bool? ?? false,
-      isDelivered: json['isDelivered'] as bool? ?? false,
-      isRead: json['isRead'] as bool? ?? false,
-      burnAfterSeconds: json['burnAfterSeconds'] as int?,
-      type: MessageType.values.firstWhere(
-        (e) => e.name == (json['type'] as String? ?? 'text'),
+    // Helper for safe String conversion
+    String safeString(dynamic value, {String fallback = ""}) {
+      if (value == null) return fallback;
+      // Handle all types that might come from JSON
+      if (value is String) return value;
+      if (value is int) return value.toString();
+      if (value is double) return value.toString();
+      if (value is bool) return value.toString();
+      return value.toString();
+    }
+
+    // Helper for safe Boolean conversion
+    bool safeBool(dynamic value) {
+      if (value == null) return false;
+      if (value is bool) return value;
+      if (value is int) return value == 1;
+      if (value is String) {
+        final lower = value.toLowerCase();
+        return lower == 'true' || lower == '1';
+      }
+      return false;
+    }
+
+    // Helper for safe int conversion
+    int? safeInt(dynamic value) {
+      if (value == null) return null;
+      if (value is int) return value;
+      if (value is double) return value.toInt();
+      if (value is String) return int.tryParse(value);
+      return null;
+    }
+
+    try {
+      // Extract and validate id
+      final rawId = json['id'];
+      final id = safeString(rawId).isEmpty 
+          ? "temp_${DateTime.now().millisecondsSinceEpoch}" 
+          : safeString(rawId);
+      
+      // Extract text - backend sends 'ciphertext', frontend uses 'text'
+      final rawText = json['text'] ?? json['ciphertext'];
+      final text = safeString(rawText, fallback: "");
+      
+      // Extract sender and recipient
+      final senderId = safeString(json['senderId'], fallback: "anonymous");
+      final recipientId = safeString(json['recipientId'], fallback: "unknown");
+      
+      // Parse timestamp
+      final timestamp = json['timestamp'] != null 
+          ? DateTime.tryParse(json['timestamp'].toString()) ?? DateTime.now()
+          : DateTime.now();
+      
+      // Parse boolean flags
+      final isSent = safeBool(json['isSent']);
+      final isDelivered = safeBool(json['isDelivered']);
+      final isRead = safeBool(json['isRead']);
+      
+      // Parse optional integers
+      final burnAfterSeconds = safeInt(json['burnAfterSeconds']);
+      final fileSize = safeInt(json['fileSize']);
+      
+      // Parse message type
+      final typeString = json['type']?.toString() ?? 'text';
+      final type = MessageType.values.firstWhere(
+        (e) => e.name == typeString,
         orElse: () => MessageType.text,
-      ),
-      fileData: json['fileData'] as String?,
-      fileName: json['fileName'] as String?,
-      mimeType: json['mimeType'] as String?,
-      fileSize: json['fileSize'] as int?,
-      // Safe casting of the map
-      reactions: json['reactions'] != null 
+      );
+      
+      // Parse optional file fields
+      final fileData = json['fileData'] != null ? safeString(json['fileData']) : null;
+      final fileName = json['fileName'] != null ? safeString(json['fileName']) : null;
+      final mimeType = json['mimeType'] != null ? safeString(json['mimeType']) : null;
+      
+      // Parse reactions
+      final reactions = json['reactions'] != null 
           ? Map<String, String>.from(json['reactions'] as Map) 
-          : {},
-    );
+          : const <String, String>{};
+
+      return ChatMessage(
+        id: id,
+        text: text,
+        senderId: senderId,
+        recipientId: recipientId,
+        timestamp: timestamp,
+        isSent: isSent,
+        isDelivered: isDelivered,
+        isRead: isRead,
+        burnAfterSeconds: burnAfterSeconds,
+        type: type,
+        fileData: fileData,
+        fileName: fileName,
+        mimeType: mimeType,
+        fileSize: fileSize,
+        reactions: reactions,
+      );
+    } catch (e, stackTrace) {
+      // Log the error with full details
+      print('❌ ChatMessage.fromJson failed: $e');
+      print('❌ JSON data: $json');
+      print('❌ Stack trace: $stackTrace');
+      
+      // Return a safe error message
+      return ChatMessage(
+        id: "error_${DateTime.now().millisecondsSinceEpoch}",
+        text: "⚠️ Failed to parse message",
+        senderId: "system",
+        recipientId: "user",
+        timestamp: DateTime.now(),
+      );
+    }
   }
 
   bool get shouldBurn {

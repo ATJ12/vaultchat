@@ -30,7 +30,7 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
     super.dispose();
   }
 
-  /// Get user's active room from storage
+  // ======= ROOM STORAGE HELPERS =======
   Future<ChatRoom?> _getActiveRoom() async {
     final myUserId = CryptoManager.instance.getUserId()!;
     final prefs = await SharedPreferences.getInstance();
@@ -39,60 +39,58 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
     return ChatRoom.fromJson(jsonDecode(roomJson));
   }
 
-  /// Save active room to storage
   Future<void> _saveActiveRoom(ChatRoom room) async {
     final myUserId = CryptoManager.instance.getUserId()!;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('active_room_$myUserId', jsonEncode(room.toJson()));
   }
 
-  /// Delete active room from storage
   Future<void> _deleteActiveRoom() async {
     final myUserId = CryptoManager.instance.getUserId()!;
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('active_room_$myUserId');
   }
 
-  /// Delete previous room before creating new one
+  // ======= DELETE PREVIOUS ROOM =======
   Future<void> _deletePreviousRoom() async {
-    final myUserId = CryptoManager.instance.getUserId()!;
-    
-    // Get active room
+    final myUserId = CryptoManager.instance.getUserId();
+    if (myUserId == null) return;
+
     final previousRoom = await _getActiveRoom();
-    if (previousRoom == null) {
-      debugPrint('No previous room to delete');
-      return;
-    }
+    if (previousRoom == null) return;
 
     try {
       final otherUserId = previousRoom.getOtherUser(myUserId);
-      
       debugPrint('🗑️ Deleting previous room: ${previousRoom.roomCode}');
-      
-      // 1. Send "USER_LEFT" notification to other user
+
       final messageService = MessageService();
-      await messageService.sendMessage(
-        recipientUserId: otherUserId,
-        messageText: "PROTOCOL_USER_LEFT_ROOM",
-      );
-      
-      debugPrint('📤 Sent USER_LEFT signal to $otherUserId');
-      
-      // 2. Clear local messages
+
+      // --- SEND "USER LEFT" MESSAGE WITH TIMEOUT ---
+      try {
+        debugPrint('🔐 Sending leave notification to $otherUserId');
+        await messageService
+            .sendMessage(
+              recipientUserId: otherUserId,
+              messageText: "PROTOCOL_USER_LEFT_ROOM",
+            )
+            .timeout(const Duration(seconds: 10));
+        debugPrint('✅ Leave notification sent');
+      } catch (e) {
+        debugPrint('❌ Failed to send leave message: $e');
+      }
+
+      // --- CLEAR LOCAL MESSAGES ---
       await MessageCache.clearConversation(myUserId, otherUserId);
-      
-      // 3. Delete local room data
+
+      // --- DELETE ACTIVE ROOM ---
       await _deleteActiveRoom();
-      
-      // Wait a bit for the signal to be sent
-      await Future.delayed(const Duration(milliseconds: 500));
-      
-      debugPrint('✅ Previous room deleted successfully');
+      await Future.delayed(const Duration(milliseconds: 300));
     } catch (e) {
       debugPrint('❌ Error deleting previous room: $e');
     }
   }
 
+  // ======= CREATE ROOM =======
   Future<void> _createRoom() async {
     final recipient = _recipientController.text.trim();
     if (recipient.isEmpty) {
@@ -106,91 +104,30 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
 
     try {
       final myUserId = CryptoManager.instance.getUserId()!;
-      
-      // DELETE PREVIOUS ROOM FIRST
       await _deletePreviousRoom();
-      
-      // Create new room locally
+
+      debugPrint('🛠️ Creating local room...');
       final room = await RoomStorage.createRoom(
         myUserId: myUserId,
         otherUserId: recipient,
       );
+      debugPrint('✅ Local room created: ${room.roomCode}');
 
-      // Send to backend (backend will also delete old room)
-      await _roomApi.createRoom(
-        user1Id: myUserId,
-        user2Id: recipient,
-        roomCode: room.roomCode,
-      );
+      debugPrint('🛠️ Sending room creation to server...');
+      await _roomApi
+          .createRoom(
+            user1Id: myUserId,
+            user2Id: recipient,
+            roomCode: room.roomCode,
+          )
+          .timeout(const Duration(seconds: 10));
+      debugPrint('✅ Server room created');
 
-      // Save as active room
       await _saveActiveRoom(room);
 
       if (mounted) {
         setState(() => _isCreating = false);
-        
-        // Show room code dialog
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            title: const Text('🔐 Room Created!'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  'Share this code with your contact:',
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 16),
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.blue, width: 2),
-                  ),
-                  child: SelectableText(
-                    room.roomCode,
-                    style: const TextStyle(
-                      fontSize: 32,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 4,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                ElevatedButton.icon(
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: room.roomCode));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Code copied!')),
-                    );
-                  },
-                  icon: const Icon(Icons.copy),
-                  label: const Text('Copy Code'),
-                ),
-              ],
-            ),
-            actions: [
-              ElevatedButton(
-                onPressed: () {
-                  Navigator.pop(context); // Close dialog
-                  Navigator.pop(context, recipient); // Return to chat list
-                  
-                  // Navigate to chat
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => ChatScreen(userId: recipient),
-                    ),
-                  );
-                },
-                child: const Text('Enter Chat'),
-              ),
-            ],
-          ),
-        );
+        _showRoomCodeDialog(room, recipient);
       }
     } catch (e) {
       if (mounted) {
@@ -202,14 +139,14 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
     }
   }
 
+  // ======= JOIN ROOM =======
   Future<void> _joinRoom() async {
     final recipient = _recipientController.text.trim();
     final code = _codeController.text.trim().toUpperCase();
 
     if (recipient.isEmpty || code.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter both user ID and code')),
-      );
+          const SnackBar(content: Text('Enter ID and code')));
       return;
     }
 
@@ -217,34 +154,26 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
 
     try {
       final myUserId = CryptoManager.instance.getUserId()!;
-      
-      // DELETE PREVIOUS ROOM FIRST
       await _deletePreviousRoom();
-      
-      // Verify with backend
-      final success = await _roomApi.joinRoom(
-        user1Id: recipient,
-        user2Id: myUserId,
-        roomCode: code,
-      );
+
+      final success = await _roomApi
+          .joinRoom(
+            user1Id: recipient,
+            user2Id: myUserId,
+            roomCode: code,
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (mounted) {
         setState(() => _isCreating = false);
-
         if (success) {
-          // Save locally
           final room = await RoomStorage.createRoom(
             myUserId: myUserId,
             otherUserId: recipient,
           );
-          
-          // Save as active room
           await _saveActiveRoom(room);
-          
-          Navigator.pop(context, recipient);
-          
-          // Navigate to chat
-          Navigator.push(
+
+          Navigator.pushReplacement(
             context,
             MaterialPageRoute(
               builder: (context) => ChatScreen(userId: recipient),
@@ -253,7 +182,7 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Room not found or has been deleted'),
+              content: Text('Room not found'),
               backgroundColor: Colors.red,
             ),
           );
@@ -269,12 +198,72 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
     }
   }
 
+  // ======= DIALOG =======
+  void _showRoomCodeDialog(ChatRoom room, String recipient) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('🔐 Room Created!'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Share this code with your contact:',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.blue, width: 2),
+              ),
+              child: SelectableText(
+                room.roomCode,
+                style: const TextStyle(
+                  fontSize: 32,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 4,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: room.roomCode));
+                ScaffoldMessenger.of(context)
+                    .showSnackBar(const SnackBar(content: Text('Code copied!')));
+              },
+              icon: const Icon(Icons.copy),
+              label: const Text('Copy Code'),
+            ),
+          ],
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context); // Close dialog
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => ChatScreen(userId: recipient),
+                ),
+              );
+            },
+            child: const Text('Enter Chat'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ======= BUILD =======
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Start Secure Chat'),
-      ),
+      appBar: AppBar(title: const Text('Start Secure Chat')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
         child: Column(
@@ -282,7 +271,6 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
           children: [
             const Icon(Icons.lock, size: 80, color: Colors.blue),
             const SizedBox(height: 24),
-
             const Text(
               'Secure Room',
               style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
@@ -295,18 +283,15 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
               style: TextStyle(color: Colors.grey),
             ),
             const SizedBox(height: 32),
-
             TextField(
               controller: _recipientController,
               decoration: const InputDecoration(
                 labelText: 'Recipient User ID',
-                hintText: 'Enter their user ID',
                 prefixIcon: Icon(Icons.person),
                 border: OutlineInputBorder(),
               ),
             ),
             const SizedBox(height: 16),
-
             ElevatedButton.icon(
               onPressed: _isCreating ? null : _createRoom,
               icon: _isCreating
@@ -318,26 +303,17 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
                   : const Icon(Icons.add),
               label: const Text('Create Room & Get Code'),
               style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.all(16),
-                backgroundColor: Colors.blue,
-              ),
+                  padding: const EdgeInsets.all(16), backgroundColor: Colors.blue),
             ),
-
             const SizedBox(height: 32),
             const Divider(),
             const SizedBox(height: 32),
-
-            const Text(
-              'Already have a code?',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
+            const Text('Already have a code?', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 16),
-
             TextField(
               controller: _codeController,
               decoration: const InputDecoration(
                 labelText: 'Room Code',
-                hintText: 'Enter 6-digit code',
                 prefixIcon: Icon(Icons.vpn_key),
                 border: OutlineInputBorder(),
               ),
@@ -345,19 +321,15 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
               maxLength: 6,
             ),
             const SizedBox(height: 16),
-
             ElevatedButton.icon(
               onPressed: _isCreating ? null : _joinRoom,
               icon: const Icon(Icons.login),
               label: const Text('Join Room'),
               style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.all(16),
-                backgroundColor: Colors.green,
-              ),
+                  padding: const EdgeInsets.all(16), backgroundColor: Colors.green),
             ),
-
             const SizedBox(height: 32),
-
+            // --- INFO BOX ---
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
@@ -365,37 +337,38 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: Colors.orange),
               ),
-              child: const Column(
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
+                  const Row(
                     children: [
                       Icon(Icons.info_outline, color: Colors.orange),
                       SizedBox(width: 8),
-                      Text(
-                        'How it works',
-                        style: TextStyle(fontWeight: FontWeight.bold),
+                      Expanded(
+                        child: Text(
+                          'How it works',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
                       ),
                     ],
                   ),
-                  SizedBox(height: 8),
-                  Text('1. Create a room to get a unique code'),
-                  Text('2. Share the code with your contact'),
-                  Text('3. Both enter the same code to chat'),
-                  Text('4. Messages are end-to-end encrypted'),
-                  SizedBox(height: 12),
+                  const SizedBox(height: 8),
+                  const Text('1. Create a room to get a unique code'),
+                  const Text('2. Share the code with your contact'),
+                  const Text('3. Both enter the same code to chat'),
+                  const Text('4. End-to-end encrypted messages'),
+                  const SizedBox(height: 12),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('⚠️ ', style: TextStyle(fontSize: 16)),
+                      const Text('⚠️ ', style: TextStyle(fontSize: 16)),
                       Expanded(
                         child: Text(
-                          'Creating a new room will:\n• Delete your previous room from server\n• Notify the other person you left\n• Make old room codes invalid',
+                          'Creating a new room will notify the other person and invalidate old codes.',
                           style: TextStyle(
-                            color: Colors.red,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13,
-                          ),
+                              color: Colors.red[700],
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13),
                         ),
                       ),
                     ],
