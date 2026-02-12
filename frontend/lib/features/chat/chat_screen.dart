@@ -77,12 +77,13 @@ class MessagesNotifier extends StateNotifier<List<ChatMessage>> {
     super.dispose();
   }
 
-  void sendTypingStatus(bool isTyping) {
+ void sendTypingStatus(bool isTyping) {
     _typingDebounce?.cancel();
     _typingDebounce = Timer(const Duration(milliseconds: 300), () async {
       await _messageService.sendMessage(
-        recipientUserId: otherUserId,
-        messageText: "$_typingSignalPrefix$isTyping",
+        recipientUserId: otherUserId, 
+        // Send the protocol signal rather than an empty message/media payload
+        messageText: "$_typingSignalPrefix$isTyping", 
       );
     });
   }
@@ -299,7 +300,6 @@ class MessagesNotifier extends StateNotifier<List<ChatMessage>> {
     
     await MessageCache.saveMessage(msg);
     state = [msg, ...state];
-    
     await _messageService.sendMessage(
       recipientUserId: otherUserId, 
       messageText: msg.text, 

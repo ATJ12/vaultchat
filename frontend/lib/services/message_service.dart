@@ -22,25 +22,27 @@ class MessageService {
     String finalContent;
     if (messageText.startsWith('PROTOCOL_')) {
       finalContent = messageText;
-    } else if (mediaMessage != null) {
+    } else {
+      // UNIFIED PAYLOAD: All non-protocol messages (text or media) 
+      // are wrapped in JSON before encryption to preserve IDs and metadata.
       final payload = {
-        '_media': true,
-        'id': mediaMessage.id,
-        'type': mediaMessage.type.name,
-        'fileData': mediaMessage.fileData,
-        'fileName': mediaMessage.fileName,
-        'mimeType': mediaMessage.mimeType,
-        'fileSize': mediaMessage.fileSize,
+        '_vault_payload': true,
+        'id': mediaMessage?.id ?? 'msg_${DateTime.now().millisecondsSinceEpoch}',
+        'type': mediaMessage?.type.name ?? MessageType.text.name,
+        'text': (mediaMessage != null && mediaMessage.text.isNotEmpty) ? mediaMessage.text : messageText,
+        'fileData': mediaMessage?.fileData,
+        'fileName': mediaMessage?.fileName,
+        'mimeType': mediaMessage?.mimeType,
+        'fileSize': mediaMessage?.fileSize,
         'senderId': myUserId,
         'recipientId': recipientUserId,
-        'timestamp': mediaMessage.timestamp.toIso8601String(),
-        'burnAfterSeconds': burnAfterSeconds ?? mediaMessage.burnAfterSeconds,
+        'timestamp': (mediaMessage?.timestamp ?? DateTime.now()).toIso8601String(),
+        'burnAfterSeconds': burnAfterSeconds ?? mediaMessage?.burnAfterSeconds,
       };
       finalContent = await _crypto.encrypt(jsonEncode(payload), recipientPublicKey);
-    } else {
-      finalContent = await _crypto.encrypt(messageText, recipientPublicKey);
     }
 
+    // Capture the encrypted content into a message for the API call
     final message = mediaMessage?.copyWith(text: finalContent) ?? ChatMessage(
       id: 'msg_${DateTime.now().millisecondsSinceEpoch}',
       text: finalContent,
@@ -68,9 +70,7 @@ class MessageService {
     final pass = passphrase.isNotEmpty ? passphrase : _crypto.getPassphrase();
 
     for (final msg in received) {
-      // CRITICAL FIX: Check if text is empty (which means it came from JSON with no text field)
-      // In that case, the encrypted content should be in the message somewhere
-      debugPrint('📥 Received message: id=${msg.id}, text="${msg.text}", hasText=${msg.text.isNotEmpty}');
+      debugPrint('📥 Received message: id=${msg.id}, hasText=${msg.text.isNotEmpty}');
       
       if (msg.text.isEmpty) {
         debugPrint('⚠️ Message has empty text, skipping: ${msg.id}');
@@ -79,10 +79,10 @@ class MessageService {
 
       try {
         final decrypted = await _decryptMessage(msg.text, pass);
-        debugPrint('🔓 Decrypted successfully: "$decrypted"');
+        debugPrint('🔓 Decrypted successfully');
         
         final processed = _processDecrypted(decrypted, msg);
-        debugPrint('✅ Processed message: id=${processed.id}, text="${processed.text}"');
+        debugPrint('✅ Processed message: id=${processed.id}, text="${processed.text.length > 20 ? processed.text.substring(0,20)+'...' : processed.text}"');
         
         results.add(processed);
       } catch (e) {
@@ -106,42 +106,37 @@ class MessageService {
     return encryptedBody;
   }
 
- ChatMessage _processDecrypted(String decryptedText, ChatMessage original) {
-  debugPrint('🔍 Decrypted text: "$decryptedText"');
-  
-  final parsed = _tryParseMedia(decryptedText, original);
-  if (parsed != null) {
-    debugPrint('📦 Parsed as media');
-    return parsed;
+  ChatMessage _processDecrypted(String decryptedText, ChatMessage original) {
+    // 1. Try to parse as the new unified payload
+    final parsed = _tryParsePayload(decryptedText, original);
+    if (parsed != null) {
+      return parsed;
+    }
+
+    // 2. Fallback for old/legacy messages or raw protocol signals
+    return ChatMessage(
+      id: original.id,
+      text: decryptedText,
+      senderId: original.senderId,
+      recipientId: original.recipientId,
+      timestamp: original.timestamp,
+      isSent: false,
+      isDelivered: original.isDelivered,
+      isRead: original.isRead,
+      type: MessageType.text,
+      reactions: original.reactions,
+    );
   }
 
-  debugPrint('💬 Parsed as text message');
-  
-  // Create a completely new ChatMessage object to ensure text is preserved
-  final result = ChatMessage(
-    id: original.id,
-    text: decryptedText,  // Explicitly set the decrypted text
-    senderId: original.senderId,
-    recipientId: original.recipientId,
-    timestamp: original.timestamp,
-    isSent: false,
-    isDelivered: original.isDelivered,
-    isRead: original.isRead,
-    type: MessageType.text,
-    reactions: original.reactions,
-  );
-  
-  debugPrint('✅ Created message with text: "${result.text}"'); // Verify the text is set
-  return result;
-}
-  ChatMessage? _tryParseMedia(String text, ChatMessage original) {
+  ChatMessage? _tryParsePayload(String text, ChatMessage original) {
   try {
-    // Skip if text doesn't look like JSON
     if (!text.trim().startsWith('{')) return null;
     
     final decoded = jsonDecode(text);
     if (decoded is! Map<String, dynamic>) return null;
-    if (decoded['_media'] != true) return null;
+    
+    // Support both old '_media' flag and new '_vault_payload' flag
+    if (decoded['_vault_payload'] != true && decoded['_media'] != true) return null;
 
     final typeStr = decoded['type']?.toString() ?? 'text';
     final type = MessageType.values.firstWhere(
@@ -154,7 +149,7 @@ class MessageService {
 
     return ChatMessage(
       id: decoded['id']?.toString() ?? original.id,
-      text: '',
+      text: decoded['text']?.toString() ?? '',
       senderId: decoded['senderId']?.toString() ?? original.senderId,
       recipientId: decoded['recipientId']?.toString() ?? original.recipientId,
       timestamp: toDate(decoded['timestamp']) ?? original.timestamp,
@@ -167,7 +162,7 @@ class MessageService {
       burnAfterSeconds: toInt(decoded['burnAfterSeconds']),
     );
   } catch (e) {
-    debugPrint('Media parse failed: $e');
+    debugPrint('Payload parse failed: $e');
     return null;
   }
 }
