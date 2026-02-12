@@ -213,19 +213,24 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.blue.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.blue, width: 2),
-              ),
-              child: SelectableText(
-                room.roomCode,
-                style: const TextStyle(
-                  fontSize: 32,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 4,
+            Builder(
+              builder: (ctx) => Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Theme.of(ctx).colorScheme.primaryContainer.withValues(alpha: 0.5),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Theme.of(ctx).colorScheme.primary,
+                    width: 2,
+                  ),
+                ),
+                child: SelectableText(
+                  room.roomCode,
+                  style: const TextStyle(
+                    fontSize: 32,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 4,
+                  ),
                 ),
               ),
             ),
@@ -269,7 +274,7 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Icon(Icons.lock, size: 80, color: Colors.blue),
+            Icon(Icons.lock_rounded, size: 80, color: Theme.of(context).colorScheme.primary),
             const SizedBox(height: 24),
             const Text(
               'Secure Room',
@@ -277,22 +282,24 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 8),
-            const Text(
+            Text(
               'Create a room or join with a code',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey),
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),
             const SizedBox(height: 32),
             TextField(
               controller: _recipientController,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'Recipient User ID',
-                prefixIcon: Icon(Icons.person),
-                border: OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.person_outline),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
             ),
             const SizedBox(height: 16),
-            ElevatedButton.icon(
+            FilledButton.icon(
               onPressed: _isCreating ? null : _createRoom,
               icon: _isCreating
                   ? const SizedBox(
@@ -300,10 +307,14 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
                       height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.add),
+                  : const Icon(Icons.add_rounded),
               label: const Text('Create Room & Get Code'),
-              style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.all(16), backgroundColor: Colors.blue),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.all(16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
             ),
             const SizedBox(height: 32),
             const Divider(),
@@ -312,42 +323,56 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
             const SizedBox(height: 16),
             TextField(
               controller: _codeController,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'Room Code',
-                prefixIcon: Icon(Icons.vpn_key),
-                border: OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.vpn_key),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
               textCapitalization: TextCapitalization.characters,
               maxLength: 6,
             ),
             const SizedBox(height: 16),
-            ElevatedButton.icon(
+            FilledButton.tonalIcon(
               onPressed: _isCreating ? null : _joinRoom,
-              icon: const Icon(Icons.login),
+              icon: const Icon(Icons.login_rounded),
               label: const Text('Join Room'),
-              style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.all(16), backgroundColor: Colors.green),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.all(16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
             ),
             const SizedBox(height: 32),
             // --- INFO BOX ---
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.orange.withOpacity(0.1),
+                color: Theme.of(context).colorScheme.tertiaryContainer.withValues(alpha: 0.3),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.orange),
+                border: Border.all(
+                  color: Theme.of(context).colorScheme.tertiary,
+                ),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Row(
+                  Row(
                     children: [
-                      Icon(Icons.info_outline, color: Colors.orange),
-                      SizedBox(width: 8),
+                      Icon(
+                        Icons.info_outline_rounded,
+                        color: Theme.of(context).colorScheme.tertiary,
+                      ),
+                      const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           'How it works',
-                          style: TextStyle(fontWeight: FontWeight.bold),
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Theme.of(context).colorScheme.onSurface,
+                          ),
                         ),
                       ),
                     ],
@@ -366,9 +391,10 @@ class _RoomEntryScreenState extends State<RoomEntryScreen> {
                         child: Text(
                           'Creating a new room will notify the other person and invalidate old codes.',
                           style: TextStyle(
-                              color: Colors.red[700],
-                              fontWeight: FontWeight.bold,
-                              fontSize: 13),
+                            color: Theme.of(context).colorScheme.error,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
                         ),
                       ),
                     ],

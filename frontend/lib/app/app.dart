@@ -75,11 +75,11 @@ class VaultChatApp extends ConsumerWidget {
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
       themeMode: ThemeMode.dark,
-      home: _buildHome(authState, ref),
+      home: _buildHome(context, authState, ref),
     );
   }
 
-  Widget _buildHome(AuthState state, WidgetRef ref) {
+  Widget _buildHome(BuildContext context, AuthState state, WidgetRef ref) {
     switch (state.status) {
       case AuthStatus.initializing:
         return const LoadingScreen(
@@ -95,17 +95,24 @@ class VaultChatApp extends ConsumerWidget {
       case AuthStatus.error:
         return Scaffold(
           body: Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Icon(Icons.error_outline, size: 64, color: Colors.red),
-                const SizedBox(height: 16),
-                Text(
-                  state.errorMessage ?? 'Unknown error',
-                  style: const TextStyle(color: Colors.red),
-                  textAlign: TextAlign.center,
-                ),
-              ],
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.error_outline_rounded,
+                    size: 64,
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    state.errorMessage ?? 'Unknown error',
+                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                    textAlign: TextAlign.center,
+                  ),
+                ],
+              ),
             ),
           ),
         );
@@ -139,105 +146,211 @@ class ChatListScreen extends ConsumerWidget {
           ),
         ],
       ),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            if (activeRoom == null) ...[
-              const Icon(Icons.chat_bubble_outline, size: 64, color: Colors.grey),
-              const SizedBox(height: 16),
-              const Text(
-                'No active room',
-                style: TextStyle(fontSize: 18, color: Colors.grey),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Your ID: $userId',
-                style: const TextStyle(fontSize: 12, color: Colors.grey),
-              ),
-              const SizedBox(height: 32),
-              const Text(
-                'Tap + to create a secure room',
-                style: TextStyle(fontSize: 14, color: Colors.grey),
-              ),
-            ] else ...[
-              const Icon(Icons.lock, size: 64, color: Colors.green),
-              const SizedBox(height: 16),
-              const Text(
-                'Active Room',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'With: $activeRoom',
-                style: const TextStyle(fontSize: 14, color: Colors.grey),
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton.icon(
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => ChatScreen(userId: activeRoom),
+      body: activeRoom == null
+          ? _EmptyState(userId: userId)
+          : _ActiveRoomCard(
+              activeRoom: activeRoom,
+              onOpenChat: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => ChatScreen(userId: activeRoom),
+                  ),
+                );
+              },
+              onLeaveRoom: () async {
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('Leave Room'),
+                    content: const Text(
+                      'Are you sure you want to leave this room? All messages will be deleted.',
                     ),
-                  );
-                },
-                icon: const Icon(Icons.chat),
-                label: const Text('Open Chat'),
-              ),
-              const SizedBox(height: 16),
-              TextButton.icon(
-                onPressed: () async {
-                  // Show confirmation dialog
-                  final confirm = await showDialog<bool>(
-                    context: context,
-                    builder: (ctx) => AlertDialog(
-                      title: const Text('Leave Room'),
-                      content: const Text(
-                        'Are you sure you want to leave this room? All messages will be deleted.',
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text('Cancel'),
                       ),
-                      actions: [
-                        TextButton(
-                          onPressed: () => Navigator.pop(ctx, false),
-                          child: const Text('Cancel'),
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, true),
+                        style: TextButton.styleFrom(
+                          foregroundColor: Theme.of(ctx).colorScheme.error,
                         ),
-                        TextButton(
-                          onPressed: () => Navigator.pop(ctx, true),
-                          style: TextButton.styleFrom(foregroundColor: Colors.red),
-                          child: const Text('Leave'),
-                        ),
-                      ],
-                    ),
-                  );
-
-                  if (confirm == true) {
-                    await ref.read(activeRoomProvider.notifier).setActiveRoom(null);
-                  }
-                },
-                icon: const Icon(Icons.exit_to_app, color: Colors.red),
-                label: const Text('Leave Room', style: TextStyle(color: Colors.red)),
-              ),
-            ],
-          ],
-        ),
-      ),
+                        child: const Text('Leave'),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirm == true) {
+                  await ref.read(activeRoomProvider.notifier).setActiveRoom(null);
+                }
+              },
+            ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () async {
-          // Navigate to room entry screen
           final result = await Navigator.push<String>(
             context,
             MaterialPageRoute(
               builder: (context) => const RoomEntryScreen(),
             ),
           );
-
-          // If a room was created/joined, set it as active
           if (result != null && result.isNotEmpty) {
             await ref.read(activeRoomProvider.notifier).setActiveRoom(result);
           }
         },
         icon: const Icon(Icons.add),
         label: Text(activeRoom == null ? 'New Chat' : 'Switch Room'),
+      ),
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  final String userId;
+
+  const _EmptyState({required this.userId});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: BoxDecoration(
+                color: scheme.primaryContainer.withValues(alpha: 0.3),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.chat_bubble_outline_rounded,
+                size: 64,
+                color: scheme.primary,
+              ),
+            ),
+            const SizedBox(height: 24),
+            Text(
+              'No active chat',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Tap the button below to start a secure conversation',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 24),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.fingerprint, size: 18, color: scheme.primary),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      userId,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontFamily: 'monospace',
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ActiveRoomCard extends StatelessWidget {
+  final String activeRoom;
+  final VoidCallback onOpenChat;
+  final VoidCallback onLeaveRoom;
+
+  const _ActiveRoomCard({
+    required this.activeRoom,
+    required this.onOpenChat,
+    required this.onLeaveRoom,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Card(
+          elevation: 0,
+          color: scheme.surfaceContainerHighest,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: scheme.primaryContainer,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(Icons.lock_rounded, size: 48, color: scheme.onPrimaryContainer),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  'Active room',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  activeRoom,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  onPressed: onOpenChat,
+                  icon: const Icon(Icons.chat_rounded),
+                  label: const Text('Open Chat'),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextButton.icon(
+                  onPressed: onLeaveRoom,
+                  icon: Icon(Icons.exit_to_app, size: 18, color: scheme.error),
+                  label: Text('Leave room', style: TextStyle(color: scheme.error)),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

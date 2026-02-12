@@ -113,10 +113,12 @@ class _IdentityScreenState extends ConsumerState<IdentityScreen> {
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 12),
-                  const Text(
+                  Text(
                     'Create your unique cryptographic identity to start messaging.',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey),
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
                   ),
                   const SizedBox(height: 40),
                   TextField(
@@ -176,14 +178,20 @@ class _InfoTile extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 16),
       child: Row(
         children: [
-          Icon(icon, color: Colors.blueGrey, size: 24),
+          Icon(icon, color: Theme.of(context).colorScheme.primary, size: 24),
           const SizedBox(width: 16),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-                Text(desc, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                Text(
+                  desc,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
               ],
             ),
           )

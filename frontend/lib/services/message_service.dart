@@ -1,7 +1,7 @@
 import 'dart:convert';
 import '../network/http/message_api.dart';
 import '../network/http/user_api.dart';
-import '../crypto/crypto_manager.dart'; 
+import '../crypto/crypto_manager.dart';
 import '../features/chat/message_model.dart';
 import 'package:flutter/foundation.dart';
 
@@ -16,91 +16,161 @@ class MessageService {
     int? burnAfterSeconds,
     ChatMessage? mediaMessage,
   }) async {
-    try {
-      // 1. Get recipient's public key
-      final recipientPublicKey = await _userApi.getUserPublicKey(recipientUserId);
-      
-      // 2. Encrypt the text
-      String finalContent;
-      if (messageText.startsWith("PROTOCOL_")) {
-        finalContent = messageText;
-      } else {
-        finalContent = await _crypto.encrypt(messageText, recipientPublicKey);
-      }
+    final myUserId = _crypto.getUserId()!;
+    final recipientPublicKey = await _userApi.getUserPublicKey(recipientUserId);
 
-      // 3. Prepare the object
-      final message = mediaMessage?.copyWith(text: finalContent) ?? ChatMessage(
-        id: "msg_${DateTime.now().millisecondsSinceEpoch}",
-        text: finalContent,
-        senderId: _crypto.getUserId()!,
-        recipientId: recipientUserId,
-        timestamp: DateTime.now(),
-        isSent: true,
-        burnAfterSeconds: burnAfterSeconds,
-      );
-      
-      // 4. Send to API 
-      await _messageApi.sendMessage(
-        recipientUserId: recipientUserId, 
-        encryptedMessage: message.text, 
-        senderId: _crypto.getUserId() ?? 'anonymous',  // ✅ ADD this
-
-      );
-      
-      debugPrint('✅ Message sent to $recipientUserId');
-    } catch (e) {
-      debugPrint('❌ Send Error: $e');
-      rethrow;
+    String finalContent;
+    if (messageText.startsWith('PROTOCOL_')) {
+      finalContent = messageText;
+    } else if (mediaMessage != null) {
+      final payload = {
+        '_media': true,
+        'id': mediaMessage.id,
+        'type': mediaMessage.type.name,
+        'fileData': mediaMessage.fileData,
+        'fileName': mediaMessage.fileName,
+        'mimeType': mediaMessage.mimeType,
+        'fileSize': mediaMessage.fileSize,
+        'senderId': myUserId,
+        'recipientId': recipientUserId,
+        'timestamp': mediaMessage.timestamp.toIso8601String(),
+        'burnAfterSeconds': burnAfterSeconds ?? mediaMessage.burnAfterSeconds,
+      };
+      finalContent = await _crypto.encrypt(jsonEncode(payload), recipientPublicKey);
+    } else {
+      finalContent = await _crypto.encrypt(messageText, recipientPublicKey);
     }
+
+    final message = mediaMessage?.copyWith(text: finalContent) ?? ChatMessage(
+      id: 'msg_${DateTime.now().millisecondsSinceEpoch}',
+      text: finalContent,
+      senderId: myUserId,
+      recipientId: recipientUserId,
+      timestamp: DateTime.now(),
+      isSent: true,
+      burnAfterSeconds: burnAfterSeconds,
+    );
+
+    await _messageApi.sendMessage(
+      recipientUserId: recipientUserId,
+      encryptedMessage: message.text,
+      senderId: myUserId,
+    );
   }
 
   Future<List<ChatMessage>> receiveMessages(String passphrase) async {
-    final userId = _crypto.getUserId();
-    if (userId == null) throw StateError('User not initialized');
-    
-    try {
-      // 1. Fetch the ChatMessage list from server (NOT raw dynamic anymore!)
-      final List<ChatMessage> receivedMessages = await _messageApi.receiveMessages(userId);
-      final messages = <ChatMessage>[];
+  final userId = _crypto.getUserId();
+  if (userId == null) throw StateError('User not initialized');
 
-      // 2. Process messages - decrypt the text field
-      for (var message in receivedMessages) {
-        try {
-          // A. Get the ciphertext from the message object (not map!)
-          String encryptedBody = message.text;
-          if (encryptedBody.isEmpty) continue;
+  try {
+    final received = await _messageApi.receiveMessages(userId);
+    final results = <ChatMessage>[];
+    final pass = passphrase.isNotEmpty ? passphrase : _crypto.getPassphrase();
 
-          // B. Decrypt if it's actually encrypted
-          String decryptedText = encryptedBody;
-          if (encryptedBody.contains('-----BEGIN PGP MESSAGE-----')) {
-            decryptedText = await _crypto.decrypt(encryptedBody, passphrase);
-          }
-
-          // C. Create a new message with decrypted text
-          messages.add(message.copyWith(
-            text: decryptedText,
-            isSent: false, // It's a received message
-          ));
-          
-        } catch (e) {
-          debugPrint('❌ Decryption error for message ${message.id}: $e');
-          // Add the message anyway with encrypted text so user knows something came in
-          messages.add(message.copyWith(
-            text: '🔒 [Decryption failed]',
-            isSent: false,
-          ));
-        }
-      }
+    for (final msg in received) {
+      // CRITICAL FIX: Check if text is empty (which means it came from JSON with no text field)
+      // In that case, the encrypted content should be in the message somewhere
+      debugPrint('📥 Received message: id=${msg.id}, text="${msg.text}", hasText=${msg.text.isNotEmpty}');
       
-      debugPrint('📥 Successfully processed ${messages.length} messages for $userId');
-      return messages;
-    } catch (e) {
-      debugPrint('❌ Global Receive Error: $e');
-      return [];
+      if (msg.text.isEmpty) {
+        debugPrint('⚠️ Message has empty text, skipping: ${msg.id}');
+        continue;
+      }
+
+      try {
+        final decrypted = await _decryptMessage(msg.text, pass);
+        debugPrint('🔓 Decrypted successfully: "$decrypted"');
+        
+        final processed = _processDecrypted(decrypted, msg);
+        debugPrint('✅ Processed message: id=${processed.id}, text="${processed.text}"');
+        
+        results.add(processed);
+      } catch (e) {
+        debugPrint('❌ Decrypt error ${msg.id}: $e');
+        results.add(msg.copyWith(text: '🔒 [Decryption failed]', isSent: false));
+      }
     }
+
+    debugPrint('📦 Total messages processed: ${results.length}');
+    return results;
+  } catch (e) {
+    debugPrint('❌ Receive error: $e');
+    return [];
+  }
+}
+
+  Future<String> _decryptMessage(String encryptedBody, String passphrase) async {
+    if (encryptedBody.contains('-----BEGIN PGP MESSAGE-----')) {
+      return await _crypto.decrypt(encryptedBody, passphrase);
+    }
+    return encryptedBody;
   }
 
-  // --- Helper Methods ---
+ ChatMessage _processDecrypted(String decryptedText, ChatMessage original) {
+  debugPrint('🔍 Decrypted text: "$decryptedText"');
+  
+  final parsed = _tryParseMedia(decryptedText, original);
+  if (parsed != null) {
+    debugPrint('📦 Parsed as media');
+    return parsed;
+  }
+
+  debugPrint('💬 Parsed as text message');
+  
+  // Create a completely new ChatMessage object to ensure text is preserved
+  final result = ChatMessage(
+    id: original.id,
+    text: decryptedText,  // Explicitly set the decrypted text
+    senderId: original.senderId,
+    recipientId: original.recipientId,
+    timestamp: original.timestamp,
+    isSent: false,
+    isDelivered: original.isDelivered,
+    isRead: original.isRead,
+    type: MessageType.text,
+    reactions: original.reactions,
+  );
+  
+  debugPrint('✅ Created message with text: "${result.text}"'); // Verify the text is set
+  return result;
+}
+  ChatMessage? _tryParseMedia(String text, ChatMessage original) {
+  try {
+    // Skip if text doesn't look like JSON
+    if (!text.trim().startsWith('{')) return null;
+    
+    final decoded = jsonDecode(text);
+    if (decoded is! Map<String, dynamic>) return null;
+    if (decoded['_media'] != true) return null;
+
+    final typeStr = decoded['type']?.toString() ?? 'text';
+    final type = MessageType.values.firstWhere(
+      (e) => e.name == typeStr,
+      orElse: () => MessageType.text,
+    );
+
+    int? toInt(dynamic v) => v == null ? null : (v is int ? v : int.tryParse(v.toString()));
+    DateTime? toDate(dynamic v) => v == null ? null : DateTime.tryParse(v.toString());
+
+    return ChatMessage(
+      id: decoded['id']?.toString() ?? original.id,
+      text: '',
+      senderId: decoded['senderId']?.toString() ?? original.senderId,
+      recipientId: decoded['recipientId']?.toString() ?? original.recipientId,
+      timestamp: toDate(decoded['timestamp']) ?? original.timestamp,
+      isSent: false,
+      type: type,
+      fileData: decoded['fileData']?.toString(),
+      fileName: decoded['fileName']?.toString(),
+      mimeType: decoded['mimeType']?.toString(),
+      fileSize: toInt(decoded['fileSize']),
+      burnAfterSeconds: toInt(decoded['burnAfterSeconds']),
+    );
+  } catch (e) {
+    debugPrint('Media parse failed: $e');
+    return null;
+  }
+}
 
   Future<void> registerCurrentUser() async {
     final userId = _crypto.getUserId();
@@ -113,11 +183,6 @@ class MessageService {
   Future<void> clearChat(String otherUserId) async {
     final myId = _crypto.getUserId();
     if (myId == null) return;
-    try {
-      await _messageApi.clearConversation(myId, otherUserId);
-    } catch (e) {
-      debugPrint('❌ Failed to clear chat: $e');
-      rethrow;
-    }
+    await _messageApi.clearConversation(myId, otherUserId);
   }
 }

@@ -1,9 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:html' as html; 
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-
+import 'package:audioplayers/audioplayers.dart';
+import 'package:file_saver/file_saver.dart';
 import 'message_model.dart';
 import '../../services/message_service.dart';
 import '../../services/media_picker_service.dart';
@@ -179,96 +180,109 @@ class MessagesNotifier extends StateNotifier<List<ChatMessage>> {
   }
 
   Future<void> _loadMessages() async {
-    try {
-      final myUserId = CryptoManager.instance.getUserId()!;
-      final server = await _messageService.receiveMessages('permanent_local_vault_key');
-      final cached = await MessageCache.getConversation(myUserId, otherUserId);
-      
-      final Map<String, ChatMessage> merged = {for (var m in cached) m.id: m};
-      bool hasChanges = false;
+  try {
+    final myUserId = CryptoManager.instance.getUserId()!;
+    final passphrase = CryptoManager.instance.getPassphrase();
+    final server = await _messageService.receiveMessages(
+      passphrase.isNotEmpty ? passphrase : 'permanent_local_vault_key',
+    );
+    final cached = await MessageCache.getConversation(myUserId, otherUserId);
+    
+    final Map<String, ChatMessage> merged = {for (var m in cached) m.id: m};
+    bool hasChanges = false;
 
-      for (final m in server) {
-        if ((m.senderId == myUserId && m.recipientId == otherUserId) || 
-            (m.senderId == otherUserId && m.recipientId == myUserId)) {
-          
-          final text = m.text;
+    for (final m in server) {
+      if ((m.senderId == myUserId && m.recipientId == otherUserId) || 
+          (m.senderId == otherUserId && m.recipientId == myUserId)) {
+        
+        final text = m.text;
+        
+        debugPrint('📨 Processing message: id=${m.id}, text="$text", sender=${m.senderId}');
 
-          // Handle Signals
-          if (text == _deletionSignal || text == _userLeftSignal) {
-            await MessageCache.clearConversation(myUserId, otherUserId);
-            state = [];
-            return; 
-          }
+        // Handle Signals
+        if (text == _deletionSignal || text == _userLeftSignal) {
+          await MessageCache.clearConversation(myUserId, otherUserId);
+          state = [];
+          return; 
+        }
 
-          if (text.startsWith(_typingSignalPrefix)) {
-            final isTyping = text.replaceFirst(_typingSignalPrefix, "") == 'true';
-            ref.read(typingStatusProvider(otherUserId).notifier).setTyping(isTyping);
-            continue; 
-          }
+        if (text.startsWith(_typingSignalPrefix)) {
+          final isTyping = text.replaceFirst(_typingSignalPrefix, "") == 'true';
+          ref.read(typingStatusProvider(otherUserId).notifier).setTyping(isTyping);
+          continue; 
+        }
 
-          if (text.startsWith(_deliveredSignalPrefix)) {
-            final id = text.replaceFirst(_deliveredSignalPrefix, "");
-            if (merged.containsKey(id) && !merged[id]!.isDelivered) {
-              merged[id] = merged[id]!.copyWith(isDelivered: true);
-              await MessageCache.saveMessage(merged[id]!);
-              hasChanges = true;
-            }
-            continue;
-          }
-
-          if (text.startsWith(_readSignalPrefix)) {
-            final id = text.replaceFirst(_readSignalPrefix, "");
-            if (merged.containsKey(id) && !merged[id]!.isRead) {
-              merged[id] = merged[id]!.copyWith(isDelivered: true, isRead: true);
-              await MessageCache.saveMessage(merged[id]!);
-              hasChanges = true;
-            }
-            continue;
-          }
-
-          if (text.startsWith(_reactionSignalPrefix)) {
-            final parts = text.replaceFirst(_reactionSignalPrefix, "").split(":");
-            if (parts.length >= 2 && merged.containsKey(parts[0])) {
-               final target = merged[parts[0]]!;
-               final newReactions = Map<String, String>.from(target.reactions)..[m.senderId] = parts[1];
-               merged[parts[0]] = target.copyWith(reactions: newReactions);
-               await MessageCache.saveMessage(merged[parts[0]]!);
-               hasChanges = true;
-            }
-            continue;
-          }
-
-          // Handle burn message signal from other user
-          if (text.startsWith(_burnMessagePrefix)) {
-            final id = text.replaceFirst(_burnMessagePrefix, "");
-            if (merged.containsKey(id)) {
-              merged.remove(id);
-              await MessageCache.deleteMessage(id);
-              hasChanges = true;
-            }
-            continue;
-          }
-
-          // Handle Content
-          if (!merged.containsKey(m.id)) {
+        if (text.startsWith(_deliveredSignalPrefix)) {
+          final id = text.replaceFirst(_deliveredSignalPrefix, "");
+          if (merged.containsKey(id) && !merged[id]!.isDelivered) {
+            merged[id] = merged[id]!.copyWith(isDelivered: true);
+            await MessageCache.saveMessage(merged[id]!);
             hasChanges = true;
-            final newMsg = m.senderId == otherUserId ? m.copyWith(isDelivered: true) : m;
-            merged[m.id] = newMsg;
-            await MessageCache.saveMessage(newMsg);
-            if (m.senderId == otherUserId) {
-              markAsDelivered(m.id);
-            }
+          }
+          continue;
+        }
+
+        if (text.startsWith(_readSignalPrefix)) {
+          final id = text.replaceFirst(_readSignalPrefix, "");
+          if (merged.containsKey(id) && !merged[id]!.isRead) {
+            merged[id] = merged[id]!.copyWith(isDelivered: true, isRead: true);
+            await MessageCache.saveMessage(merged[id]!);
+            hasChanges = true;
+          }
+          continue;
+        }
+
+        if (text.startsWith(_reactionSignalPrefix)) {
+          final parts = text.replaceFirst(_reactionSignalPrefix, "").split(":");
+          if (parts.length >= 2 && merged.containsKey(parts[0])) {
+             final target = merged[parts[0]]!;
+             final newReactions = Map<String, String>.from(target.reactions)..[m.senderId] = parts[1];
+             merged[parts[0]] = target.copyWith(reactions: newReactions);
+             await MessageCache.saveMessage(merged[parts[0]]!);
+             hasChanges = true;
+          }
+          continue;
+        }
+
+        // Handle burn message signal from other user
+        if (text.startsWith(_burnMessagePrefix)) {
+          final id = text.replaceFirst(_burnMessagePrefix, "");
+          if (merged.containsKey(id)) {
+            merged.remove(id);
+            await MessageCache.deleteMessage(id);
+            hasChanges = true;
+          }
+          continue;
+        }
+
+        // Handle Content
+        if (!merged.containsKey(m.id)) {
+          debugPrint('✅ New message detected: text="${m.text}", type=${m.type}');
+          hasChanges = true;
+          final newMsg = m.senderId == otherUserId ? m.copyWith(isDelivered: true) : m;
+          merged[m.id] = newMsg;
+          await MessageCache.saveMessage(newMsg);
+          if (m.senderId == otherUserId) {
+            markAsDelivered(m.id);
           }
         }
       }
-      
-      if (hasChanges || merged.length != state.length) {
-        state = merged.values.toList()..sort((a, b) => b.timestamp.compareTo(a.timestamp));
-      }
-    } catch (e) { 
-      debugPrint('Sync Error: $e'); 
     }
+    
+    if (hasChanges || merged.length != state.length) {
+      final sorted = merged.values.toList()
+        ..sort((a, b) {
+          final ts = b.timestamp.compareTo(a.timestamp);
+          if (ts != 0) return ts;
+          return a.id.compareTo(b.id);
+        });
+      debugPrint('🔄 Updating state with ${sorted.length} messages');
+      state = sorted;
+    }
+  } catch (e) { 
+    debugPrint('Sync Error: $e'); 
   }
+}
 
   Future<void> sendMessage(String text, {int? burnSeconds, ChatMessage? mediaMessage}) async {
     final myId = CryptoManager.instance.getUserId()!;
@@ -315,6 +329,8 @@ class ChatScreen extends ConsumerStatefulWidget {
 class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObserver {
   final _controller = TextEditingController();
   final _mediaPicker = MediaPickerService();
+  final _focusNode = FocusNode();
+  final _audioPlayer = AudioPlayer();
   int? _mintoyTime;
 
   @override
@@ -323,11 +339,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
     WidgetsBinding.instance.addObserver(this);
     ScreenshotProtection.enableProtection();
     _controller.addListener(_onTextChanged);
+    _focusNode.addListener(_onInputFocusChanged);
     Future.microtask(() => ref.read(messagesProvider(widget.userId).notifier).markAllAsRead());
+  }
+
+  void _onInputFocusChanged() {
+    if (_focusNode.hasFocus) {
+      ref.read(messagesProvider(widget.userId).notifier).markAllAsRead();
+    }
   }
 
   @override
   void dispose() {
+    _focusNode.removeListener(_onInputFocusChanged);
+    _focusNode.dispose();
+    _audioPlayer.dispose();
     MessageService().sendMessage(recipientUserId: widget.userId, messageText: _userLeftSignal);
     WidgetsBinding.instance.removeObserver(this);
     ScreenshotProtection.disableProtection();
@@ -384,19 +410,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
           children: [
             Text(widget.userId),
             if (isTyping)
-              const Text(
-                'typing...', 
-                style: TextStyle(
-                  fontSize: 12, 
-                  fontStyle: FontStyle.italic, 
-                  color: Colors.white70
-                )
+              Text(
+                'typing...',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  fontStyle: FontStyle.italic,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
           ],
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.delete_forever, color: Colors.red),
+            icon: Icon(Icons.delete_forever, color: Theme.of(context).colorScheme.error),
             onPressed: () => ref.read(messagesProvider(widget.userId).notifier).deleteForEveryone(),
           ),
         ],
@@ -420,7 +445,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
   }
 
   Widget _buildBubble(ChatMessage m, bool isMe) {
-    final color = isMe ? Colors.white : Colors.black87;
+    final scheme = Theme.of(context).colorScheme;
+    final bubbleColor = isMe ? scheme.primary : scheme.surfaceContainerHighest;
+    final textColor = isMe ? scheme.onPrimary : scheme.onSurface;
     return Align(
       alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
       child: Column(
@@ -429,19 +456,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
           GestureDetector(
             onLongPress: () => _showEmojiPicker(m),
             child: Container(
-              margin: const EdgeInsets.all(6),
-              padding: const EdgeInsets.all(12),
+              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
               decoration: BoxDecoration(
-                color: isMe ? Colors.blue : Colors.grey[300],
-                borderRadius: BorderRadius.circular(15),
+                color: bubbleColor,
+                borderRadius: BorderRadius.only(
+                  topLeft: const Radius.circular(18),
+                  topRight: const Radius.circular(18),
+                  bottomLeft: Radius.circular(isMe ? 18 : 4),
+                  bottomRight: Radius.circular(isMe ? 4 : 18),
+                ),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  _renderMsg(m, color),
+                  _renderMsg(m, textColor),
                   if (isMe) ...[
                     const SizedBox(height: 4),
-                    _buildStatusIcon(m),
+                    _buildStatusIcon(m, isMe),
                   ],
                 ],
               ),
@@ -459,61 +491,177 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
     );
   }
 
-  Widget _buildStatusIcon(ChatMessage m) {
+  Widget _buildStatusIcon(ChatMessage m, bool isMe) {
+    final scheme = Theme.of(context).colorScheme;
+    final iconColor = isMe ? scheme.onPrimary.withValues(alpha: 0.9) : scheme.onSurface.withValues(alpha: 0.7);
+    final readColor = scheme.primaryContainer;
     if (m.isRead) {
-      return const Icon(Icons.done_all, size: 14, color: Colors.lightBlueAccent);
+      return Icon(Icons.done_all, size: 14, color: readColor);
     }
     if (m.isDelivered) {
-      return const Icon(Icons.done_all, size: 14, color: Colors.white70);
+      return Icon(Icons.done_all, size: 14, color: iconColor);
     }
     if (m.isSent) {
-      return const Icon(Icons.check, size: 14, color: Colors.white70);
+      return Icon(Icons.check, size: 14, color: iconColor);
     }
-    return const Icon(Icons.schedule, size: 14, color: Colors.white54);
+    return Icon(Icons.schedule, size: 14, color: iconColor.withValues(alpha: 0.6));
   }
 
   Widget _renderMsg(ChatMessage m, Color color) {
     if (m.type == MessageType.image) {
-      return Image.memory(base64Decode(m.fileData!), width: 180);
+      if (m.fileData != null && m.fileData!.isNotEmpty) {
+        try {
+          return GestureDetector(
+            onTap: () => _downloadFile(m.copyWith(fileName: m.fileName ?? 'image_${m.id}.png')),
+            child: Image.memory(base64Decode(m.fileData!), width: 180, fit: BoxFit.cover),
+          );
+        } catch (_) {
+          return Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.broken_image, color: color),
+              const SizedBox(width: 8),
+              Text('[Image]', style: TextStyle(color: color)),
+            ],
+          );
+        }
+      }
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.image, color: color),
+          const SizedBox(width: 8),
+          Text('[Image]', style: TextStyle(color: color)),
+        ],
+      );
     }
     if (m.type == MessageType.audio) {
-      return Row(
-        mainAxisSize: MainAxisSize.min, 
-        children: [
-          Icon(Icons.play_circle, color: color),
-          const SizedBox(width: 8),
-          Text("Voice Message", style: TextStyle(color: color))
-        ]
+      return InkWell(
+        onTap: () => _playAudio(m),
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.play_circle_filled, color: color, size: 32),
+              const SizedBox(width: 12),
+              Text(m.fileName ?? 'Voice Message', style: TextStyle(color: color)),
+            ],
+          ),
+        ),
+      );
+    }
+    if (m.type == MessageType.file) {
+      return InkWell(
+        onTap: () => _downloadFile(m),
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.download, color: color, size: 24),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  m.fileName ?? (m.text.isNotEmpty ? m.text : '[File]'),
+                  style: TextStyle(color: color),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
       );
     }
     return Text(m.text, style: TextStyle(color: color));
   }
 
+  Future<void> _downloadFile(ChatMessage m) async {
+    if (m.fileData == null || m.fileData!.isEmpty) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No file data')));
+      return;
+    }
+    try {
+      final bytes = Uint8List.fromList(base64Decode(m.fileData!));
+      final fileName = m.fileName ?? 'download_${m.id}';
+      await FileSaver.instance.saveFile(name: fileName, bytes: bytes);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved: $fileName')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Download failed: $e')));
+      }
+    }
+  }
+
+  Future<void> _playAudio(ChatMessage m) async {
+    if (m.fileData == null || m.fileData!.isEmpty) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No audio data')));
+      return;
+    }
+    try {
+      final bytes = Uint8List.fromList(base64Decode(m.fileData!));
+      await _audioPlayer.play(BytesSource(bytes));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Playing...')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Play failed: $e')));
+      }
+    }
+  }
+
   Widget _buildInput() {
+    final scheme = Theme.of(context).colorScheme;
     return Container(
-      padding: const EdgeInsets.all(8),
-      child: Row(
-        children: [
-          IconButton(
-            icon: Icon(
-              Icons.timer, 
-              color: _mintoyTime != null ? Colors.orange : Colors.grey
-            ), 
-            onPressed: _showMintoyPicker
-          ),
-          IconButton(
-            icon: const Icon(Icons.add), 
-            onPressed: _showAttachments
-          ),
-          Expanded(
-            child: TextField(
-              controller: _controller, 
-              decoration: const InputDecoration(hintText: "Aa")
-            )
-          ),
-          IconButton(
-            icon: const Icon(Icons.send),
-            onPressed: () {
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+      decoration: BoxDecoration(
+        color: scheme.surface,
+        border: Border(top: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5))),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            IconButton(
+              icon: Icon(
+                Icons.timer_outlined,
+                color: _mintoyTime != null ? scheme.tertiary : scheme.onSurfaceVariant,
+              ),
+              onPressed: _showMintoyPicker,
+            ),
+            IconButton(
+              icon: Icon(Icons.add_circle_outline, color: scheme.primary),
+              onPressed: _showAttachments,
+            ),
+            Expanded(
+              child: TextField(
+                controller: _controller,
+                focusNode: _focusNode,
+                maxLines: 4,
+                minLines: 1,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: InputDecoration(
+                  hintText: 'Message',
+                  filled: true,
+                  fillColor: scheme.surfaceContainerHighest,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(24),
+                    borderSide: BorderSide.none,
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                ),
+              ),
+            ),
+            const SizedBox(width: 4),
+            IconButton.filled(
+              icon: const Icon(Icons.send_rounded, size: 22),
+              onPressed: () {
               if (_controller.text.isNotEmpty) {
                 ref.read(messagesProvider(widget.userId).notifier).sendMessage(
                   _controller.text, 
@@ -522,54 +670,88 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
                 _controller.clear();
               }
             },
-          ),
-        ]
+            ),
+          ],
+        ),
       ),
     );
   }
 
   void _showMintoyPicker() {
     showModalBottomSheet(
-      context: context, 
-      builder: (ctx) => Column(
-        mainAxisSize: MainAxisSize.min, 
-        children: [
-          ListTile(
-            title: const Text("Never"), 
-            onTap: () => setState(() { 
-              _mintoyTime = null; 
-              Navigator.pop(ctx); 
-            })
-          ),
-          ListTile(
-            title: const Text("10 Seconds"), 
-            onTap: () => setState(() { 
-              _mintoyTime = 10; 
-              Navigator.pop(ctx); 
-            })
-          ),
-          ListTile(
-            title: const Text("1 Minute"), 
-            onTap: () => setState(() { 
-              _mintoyTime = 60; 
-              Navigator.pop(ctx); 
-            })
-          ),
-        ]
-      )
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).padding.bottom),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Icon(Icons.auto_delete, color: Theme.of(ctx).colorScheme.primary),
+                  const SizedBox(width: 12),
+                  Text('Disappearing message', style: Theme.of(ctx).textTheme.titleMedium),
+                ],
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.all_inclusive),
+              title: const Text('Never'),
+              onTap: () {
+                setState(() => _mintoyTime = null);
+                Navigator.pop(ctx);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.timer),
+              title: const Text('10 seconds'),
+              onTap: () {
+                setState(() => _mintoyTime = 10);
+                Navigator.pop(ctx);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.timer),
+              title: const Text('1 minute'),
+              onTap: () {
+                setState(() => _mintoyTime = 60);
+                Navigator.pop(ctx);
+              },
+            ),
+          ],
+        ),
+      ),
     );
   }
 
   void _showAttachments() {
     showModalBottomSheet(
-      context: context, 
-      builder: (ctx) => Column(
-        mainAxisSize: MainAxisSize.min, 
-        children: [
-          ListTile(
-            leading: const Icon(Icons.image), 
-            title: const Text("Image"), 
-            onTap: () async {
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).padding.bottom),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text('Share', style: Theme.of(ctx).textTheme.titleMedium),
+            ),
+            ListTile(
+              leading: CircleAvatar(
+                backgroundColor: Theme.of(ctx).colorScheme.primaryContainer,
+                child: Icon(Icons.image, color: Theme.of(ctx).colorScheme.onPrimaryContainer),
+              ),
+              title: const Text('Image'),
+              onTap: () async {
               Navigator.pop(ctx);
               final m = await _mediaPicker.pickImage(
                 senderId: CryptoManager.instance.getUserId()!, 
@@ -584,10 +766,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
               }
             }
           ),
-          ListTile(
-            leading: const Icon(Icons.description), 
-            title: const Text("File"), 
-            onTap: () async {
+            ListTile(
+              leading: CircleAvatar(
+                backgroundColor: Theme.of(ctx).colorScheme.primaryContainer,
+                child: Icon(Icons.insert_drive_file, color: Theme.of(ctx).colorScheme.onPrimaryContainer),
+              ),
+              title: const Text('File'),
+              onTap: () async {
               Navigator.pop(ctx);
               final m = await _mediaPicker.pickFile(
                 senderId: CryptoManager.instance.getUserId()!, 
@@ -602,16 +787,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
               }
             }
           ),
-          ListTile(
-            leading: const Icon(Icons.mic), 
-            title: const Text("Voice"), 
-            onTap: () { 
-              Navigator.pop(ctx); 
-              _showVoice(); 
-            }
-          ),
-        ]
-      )
+            ListTile(
+              leading: CircleAvatar(
+                backgroundColor: Theme.of(ctx).colorScheme.primaryContainer,
+                child: Icon(Icons.mic, color: Theme.of(ctx).colorScheme.onPrimaryContainer),
+              ),
+              title: const Text('Voice message'),
+              onTap: () {
+                Navigator.pop(ctx);
+                _showVoice();
+              },
+            ),
+          ],
+        ),
+      ),
     );
   }
 
