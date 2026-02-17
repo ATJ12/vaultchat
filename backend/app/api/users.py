@@ -13,22 +13,35 @@ router = APIRouter(prefix="/users")
 class RegisterUserSchema(BaseModel):
     user_id: str
     public_key: str
+    signature: str
+    timestamp: str
 
 @router.post("/register")
 def register_user_endpoint(payload: RegisterUserSchema, db: Session = Depends(get_db)):
     try:
         print(f"📥 Received registration for user: {payload.user_id}")
-        print(f"📦 Public key (first 50 chars): {payload.public_key[:50]}...")
         
-        # Decode base64 public key
-        public_key_bytes = base64.b64decode(payload.public_key)
-        print(f"✓ Decoded public key: {len(public_key_bytes)} bytes")
+        # 1. Verify Signature
+        # The data signed should be user_id + timestamp to prevent reuse
+        signed_data = f"{payload.user_id}|{payload.timestamp}"
+        from app.core.security import verify_pgp_signature
+        
+        if not verify_pgp_signature(payload.public_key, payload.signature, signed_data):
+            print(f"❌ Signature verification failed for {payload.user_id}")
+            raise HTTPException(status_code=401, detail="Invalid identity signature")
+
+        # 2. Decode base64 public key for storage (or store as PEM/Armor)
+        # The frontend sends PGP Armor, let's store it as bytes or string
+        # To keep it consistent with existing LargeBinary column
+        public_key_bytes = payload.public_key.encode('utf-8')
         
         # Register user
         register_user(db, payload.user_id, public_key_bytes)
         print(f"✅ User {payload.user_id} registered successfully")
         
         return {"status": "registered", "user_id": payload.user_id}
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ Registration failed: {str(e)}")
         traceback.print_exc()

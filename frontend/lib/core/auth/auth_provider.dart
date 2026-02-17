@@ -25,18 +25,17 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  Future<void> generateIdentity({String? customUserId}) async {
+  Future<void> generateIdentity({String? customUserId, required String passphrase}) async {
     try {
       // 1. Create the anonymous ID
       final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
       final ghostEmail = 'vault_$timestamp@vaultchat.local';
-      final ghostPass = 'permanent_local_vault_key';
 
-      // 2. Call the manager with ALL required arguments
+      // 2. Call the manager with the user's passphrase
       await CryptoManager.instance.generateIdentityKeys(
-        userId: customUserId, // This is optional in our manager
-        email: ghostEmail,    // This is REQUIRED
-        passphrase: ghostPass, // This is REQUIRED
+        userId: customUserId,
+        email: ghostEmail,
+        passphrase: passphrase,
       );
       
       // 3. Register with backend

@@ -12,6 +12,7 @@ import '../../services/audio_recorder_service.dart';
 import '../../crypto/crypto_manager.dart';
 import '../../storage/cache/message_cache.dart';
 import '../../services/screenshot_protection.dart';
+import '../../services/steganography_service.dart';
 
 // --- PROTOCOL CONSTANTS ---
 const String _deletionSignal = "PROTOCOL_DELETE_CONVERSATION_SYNC";
@@ -184,9 +185,7 @@ class MessagesNotifier extends StateNotifier<List<ChatMessage>> {
   try {
     final myUserId = CryptoManager.instance.getUserId()!;
     final passphrase = CryptoManager.instance.getPassphrase();
-    final server = await _messageService.receiveMessages(
-      passphrase.isNotEmpty ? passphrase : 'permanent_local_vault_key',
-    );
+    final server = await _messageService.receiveMessages(passphrase);
     final cached = await MessageCache.getConversation(myUserId, otherUserId);
     
     final Map<String, ChatMessage> merged = {for (var m in cached) m.id: m};
@@ -285,12 +284,32 @@ class MessagesNotifier extends StateNotifier<List<ChatMessage>> {
   }
 }
 
-  Future<void> sendMessage(String text, {int? burnSeconds, ChatMessage? mediaMessage}) async {
+  Future<void> sendMessage(String text, {int? burnSeconds, ChatMessage? mediaMessage, bool isGhost = false}) async {
     final myId = CryptoManager.instance.getUserId()!;
-    final msg = mediaMessage?.copyWith(burnAfterSeconds: burnSeconds, isSent: true) ?? 
+    
+    ChatMessage? finalMedia = mediaMessage;
+    String finalSecret = text;
+
+    // STEGANOGRAPHY: If ghost mode is on and we have an image
+    if (isGhost && mediaMessage != null && mediaMessage.type == MessageType.image && mediaMessage.fileData != null) {
+      try {
+        final decodedImage = base64Decode(mediaMessage.fileData!);
+        final encodedImage = SteganographyService.encode(decodedImage, text);
+        finalMedia = mediaMessage.copyWith(
+          fileData: base64Encode(encodedImage),
+          text: '', // Hide the text from the JSON field
+        );
+        finalSecret = ''; // Clear secret from the main protocol payload
+        debugPrint('👻 Ghost Mode: Secret message hidden in image pixels');
+      } catch (e) {
+        debugPrint('⚠️ Steganography failed: $e');
+      }
+    }
+
+    final msg = finalMedia?.copyWith(burnAfterSeconds: burnSeconds, isSent: true) ?? 
       ChatMessage(
         id: DateTime.now().millisecondsSinceEpoch.toString(),
-        text: text, 
+        text: finalSecret, 
         senderId: myId, 
         recipientId: otherUserId,
         timestamp: DateTime.now(), 
@@ -332,6 +351,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
   final _focusNode = FocusNode();
   final _audioPlayer = AudioPlayer();
   int? _mintoyTime;
+  bool _isGhostMode = false;
 
   @override
   void initState() {
@@ -420,6 +440,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
           ],
         ),
         actions: [
+          IconButton(
+            icon: Icon(
+              _isGhostMode ? Icons.security : Icons.security_outlined, 
+              color: _isGhostMode ? Colors.purpleAccent : null
+            ),
+            onPressed: () => setState(() => _isGhostMode = !_isGhostMode),
+            tooltip: 'Ghost Mode',
+          ),
           IconButton(
             icon: Icon(Icons.delete_forever, color: Theme.of(context).colorScheme.error),
             onPressed: () => ref.read(messagesProvider(widget.userId).notifier).deleteForEveryone(),
@@ -665,7 +693,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
               if (_controller.text.isNotEmpty) {
                 ref.read(messagesProvider(widget.userId).notifier).sendMessage(
                   _controller.text, 
-                  burnSeconds: _mintoyTime
+                  burnSeconds: _mintoyTime,
+                  isGhost: _isGhostMode,
                 );
                 _controller.clear();
               }
@@ -759,10 +788,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
               );
               if (m != null) {
                 ref.read(messagesProvider(widget.userId).notifier).sendMessage(
-                  "", 
+                  _controller.text, 
                   mediaMessage: m, 
-                  burnSeconds: _mintoyTime
+                  burnSeconds: _mintoyTime,
+                  isGhost: _isGhostMode,
                 );
+                _controller.clear();
               }
             }
           ),
@@ -808,11 +839,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> with WidgetsBindingObse
     showDialog(
       context: context, 
       builder: (ctx) => _VoiceRecorderDialog(
-        onSend: (m) => ref.read(messagesProvider(widget.userId).notifier).sendMessage(
-          "", 
-          mediaMessage: m, 
-          burnSeconds: _mintoyTime
-        ),
+        onSend: (m) {
+          ref.read(messagesProvider(widget.userId).notifier).sendMessage(
+            _controller.text, 
+            mediaMessage: m, 
+            burnSeconds: _mintoyTime,
+            isGhost: _isGhostMode,
+          );
+          _controller.clear();
+        },
         userId: widget.userId,
       )
     );

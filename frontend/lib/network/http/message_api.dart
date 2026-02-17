@@ -20,10 +20,18 @@ class MessageApi {
 }
 
   /// Returns a list of ChatMessage objects
-  Future<List<ChatMessage>> receiveMessages(String userId) async {
+  Future<List<ChatMessage>> receiveMessages({
+    required String userId,
+    required String signature,
+    required String timestamp,
+  }) async {
     try {
-      print('🔍 Fetching messages for user: $userId');
-      final response = await _client.get('/messages/receive/$userId');
+      print('🔍 Fetching messages for user: $userId (Authenticated)');
+      final response = await _client.post('/messages/receive', data: {
+        'user_id': userId,
+        'signature': signature,
+        'timestamp': timestamp,
+      });
       
       print('📦 Response status: ${response.statusCode}');
       print('📦 Response data type: ${response.data.runtimeType}');

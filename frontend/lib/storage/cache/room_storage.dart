@@ -6,8 +6,22 @@ class RoomStorage {
   static const String _boxName = 'chat_rooms';
   static Box<Map>? _box;
 
-  static Future<void> initialize() async {
-    _box = await Hive.openBox<Map>(_boxName);
+  static Future<void> initialize({List<int>? encryptionKey}) async {
+    try {
+      if (encryptionKey != null) {
+        _box = await Hive.openBox<Map>(_boxName, encryptionCipher: HiveAesCipher(encryptionKey));
+      } else {
+        _box = await Hive.openBox<Map>(_boxName);
+      }
+    } catch (e) {
+      print('⚠️ Failed to open room box: $e');
+      await Hive.deleteBoxFromDisk(_boxName);
+      if (encryptionKey != null) {
+        _box = await Hive.openBox<Map>(_boxName, encryptionCipher: HiveAesCipher(encryptionKey));
+      } else {
+        _box = await Hive.openBox<Map>(_boxName);
+      }
+    }
   }
 
   static String generateRoomCode() {

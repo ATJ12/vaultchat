@@ -25,19 +25,11 @@ class Bootstrap {
       await Hive.initFlutter();
       logger.d('✓ Hive initialized');
       
-      // Initialize message cache
-      await MessageCache.initialize();
-      logger.d('✓ Message cache initialized');
-      
-      // Initialize room storage
-      await RoomStorage.initialize();
-      logger.d('✓ Room storage initialized');
-      
       // Initialize secure storage
       await SecureStorage.initialize();
       logger.d('✓ Secure storage initialized');
       
-      // Initialize crypto manager
+      // Initialize crypto manager (handles storage initialization internally)
       await CryptoManager.initialize();
       logger.d('✓ Crypto manager initialized');
       

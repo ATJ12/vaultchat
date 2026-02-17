@@ -127,11 +127,3 @@ def notify_user_left(room_code: str, payload: dict):
     # This endpoint is just for logging/tracking
     
     return {"status": "notified"}
-
-@router.get("/debug")
-def debug_rooms():
-    """Debug endpoint to see all active rooms"""
-    return {
-        "active_rooms": _rooms,
-        "user_active_rooms": _user_active_rooms
-    }

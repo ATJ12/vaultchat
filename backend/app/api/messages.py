@@ -1,5 +1,6 @@
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.infra.postgres import get_db
 from app.core.message import store_message, fetch_messages
@@ -43,16 +44,34 @@ def send_message(payload: dict, db: Session = Depends(get_db)):
             raise e
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/receive/{user_id}")
-def receive_messages_endpoint(user_id: str, db: Session = Depends(get_db)):
+class ReceiveMessagesSchema(BaseModel):
+    user_id: str
+    signature: str
+    timestamp: str
+
+@router.post("/receive")
+def receive_messages_endpoint(payload: ReceiveMessagesSchema, db: Session = Depends(get_db)):
     try:
         # 1. Get user's public key
-        pub_key = get_public_key(db, user_id)
-        if not pub_key:
-            raise HTTPException(status_code=404, detail=f"User not found: {user_id}")
+        pub_key_bytes = get_public_key(db, payload.user_id)
+        if not pub_key_bytes:
+            raise HTTPException(status_code=404, detail=f"User not found: {payload.user_id}")
 
-        # 2. Fetch messages (this also deletes them from DB)
-        messages = fetch_messages(db, pub_key)
+        # 2. Verify Signature
+        # The data signed is user_id + timestamp
+        signed_data = f"{payload.user_id}|{payload.timestamp}"
+        from app.core.security import verify_pgp_signature
+        
+        # pub_key_bytes is stored as PGP Armor bytes from our new registration logic
+        pub_key_text = pub_key_bytes.decode('utf-8')
+        
+        if not verify_pgp_signature(pub_key_text, payload.signature, signed_data):
+            print(f"❌ Signature verification failed for fetch: {payload.user_id}")
+            raise HTTPException(status_code=401, detail="Invalid identity signature")
+
+        # 3. Fetch messages (this also deletes them from DB)
+        # We need the raw bytes for comparison in fetch_messages
+        messages = fetch_messages(db, pub_key_bytes)
         
         # 3. Format result for JSON
         result = []
@@ -68,7 +87,7 @@ def receive_messages_endpoint(user_id: str, db: Session = Depends(get_db)):
                 "id": m.id,
                 "ciphertext": display_text,
                 "senderId": m.sender_id,
-                "recipientId": user_id,
+                "recipientId": payload.user_id,
                 "timestamp": m.created_at.isoformat() if m.created_at else datetime.utcnow().isoformat()
             })
         

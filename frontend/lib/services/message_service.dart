@@ -3,6 +3,7 @@ import '../network/http/message_api.dart';
 import '../network/http/user_api.dart';
 import '../crypto/crypto_manager.dart';
 import '../features/chat/message_model.dart';
+import 'steganography_service.dart';
 import 'package:flutter/foundation.dart';
 
 class MessageService {
@@ -19,43 +20,28 @@ class MessageService {
     final myUserId = _crypto.getUserId()!;
     final recipientPublicKey = await _userApi.getUserPublicKey(recipientUserId);
 
-    String finalContent;
-    if (messageText.startsWith('PROTOCOL_')) {
-      finalContent = messageText;
-    } else {
-      // UNIFIED PAYLOAD: All non-protocol messages (text or media) 
-      // are wrapped in JSON before encryption to preserve IDs and metadata.
-      final payload = {
-        '_vault_payload': true,
-        'id': mediaMessage?.id ?? 'msg_${DateTime.now().millisecondsSinceEpoch}',
-        'type': mediaMessage?.type.name ?? MessageType.text.name,
-        'text': (mediaMessage != null && mediaMessage.text.isNotEmpty) ? mediaMessage.text : messageText,
-        'fileData': mediaMessage?.fileData,
-        'fileName': mediaMessage?.fileName,
-        'mimeType': mediaMessage?.mimeType,
-        'fileSize': mediaMessage?.fileSize,
-        'senderId': myUserId,
-        'recipientId': recipientUserId,
-        'timestamp': (mediaMessage?.timestamp ?? DateTime.now()).toIso8601String(),
-        'burnAfterSeconds': burnAfterSeconds ?? mediaMessage?.burnAfterSeconds,
-      };
-      finalContent = await _crypto.encrypt(jsonEncode(payload), recipientPublicKey);
-    }
-
-    // Capture the encrypted content into a message for the API call
-    final message = mediaMessage?.copyWith(text: finalContent) ?? ChatMessage(
-      id: 'msg_${DateTime.now().millisecondsSinceEpoch}',
-      text: finalContent,
-      senderId: myUserId,
-      recipientId: recipientUserId,
-      timestamp: DateTime.now(),
-      isSent: true,
-      burnAfterSeconds: burnAfterSeconds,
-    );
+    final payload = {
+      '_vault_payload': true,
+      'is_protocol': messageText.startsWith('PROTOCOL_'),
+      'id': mediaMessage?.id ?? 'msg_${DateTime.now().millisecondsSinceEpoch}',
+      'type': mediaMessage?.type.name ?? MessageType.text.name,
+      'text': (mediaMessage != null && mediaMessage.text.isNotEmpty) ? mediaMessage.text : messageText,
+      'fileData': mediaMessage?.fileData,
+      'fileName': mediaMessage?.fileName,
+      'mimeType': mediaMessage?.mimeType,
+      'fileSize': mediaMessage?.fileSize,
+      'senderId': myUserId,
+      'recipientId': recipientUserId,
+      'timestamp': (mediaMessage?.timestamp ?? DateTime.now()).toIso8601String(),
+      'burnAfterSeconds': burnAfterSeconds ?? mediaMessage?.burnAfterSeconds,
+    };
+    
+    // EVERY message is now encrypted, even protocol signals
+    final finalContent = await _crypto.encrypt(jsonEncode(payload), recipientPublicKey);
 
     await _messageApi.sendMessage(
       recipientUserId: recipientUserId,
-      encryptedMessage: message.text,
+      encryptedMessage: finalContent,
       senderId: myUserId,
     );
   }
@@ -65,7 +51,15 @@ class MessageService {
   if (userId == null) throw StateError('User not initialized');
 
   try {
-    final received = await _messageApi.receiveMessages(userId);
+    final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+    final signature = await _crypto.sign('$userId|$timestamp');
+    
+    final received = await _messageApi.receiveMessages(
+      userId: userId,
+      signature: signature,
+      timestamp: timestamp,
+    );
+    
     final results = <ChatMessage>[];
     final pass = passphrase.isNotEmpty ? passphrase : _crypto.getPassphrase();
 
@@ -147,15 +141,32 @@ class MessageService {
     int? toInt(dynamic v) => v == null ? null : (v is int ? v : int.tryParse(v.toString()));
     DateTime? toDate(dynamic v) => v == null ? null : DateTime.tryParse(v.toString());
 
+    final fileData = decoded['fileData']?.toString();
+    String decodedText = decoded['text']?.toString() ?? '';
+
+    // STEGANOGRAPHY: Auto-decode ghost messages in images
+    if (type == MessageType.image && fileData != null) {
+      try {
+        final bytes = base64Decode(fileData);
+        final hidden = SteganographyService.decode(bytes);
+        if (hidden.isNotEmpty) {
+          decodedText = hidden; // The hidden text IS the message
+          debugPrint('👻 Ghost Mode: Secret message extracted from image');
+        }
+      } catch (e) {
+        debugPrint('⚠️ Steganography decode failed: $e');
+      }
+    }
+
     return ChatMessage(
       id: decoded['id']?.toString() ?? original.id,
-      text: decoded['text']?.toString() ?? '',
+      text: decodedText,
       senderId: decoded['senderId']?.toString() ?? original.senderId,
       recipientId: decoded['recipientId']?.toString() ?? original.recipientId,
       timestamp: toDate(decoded['timestamp']) ?? original.timestamp,
       isSent: false,
       type: type,
-      fileData: decoded['fileData']?.toString(),
+      fileData: fileData,
       fileName: decoded['fileName']?.toString(),
       mimeType: decoded['mimeType']?.toString(),
       fileSize: toInt(decoded['fileSize']),
@@ -171,7 +182,15 @@ class MessageService {
     final userId = _crypto.getUserId();
     final publicKey = _crypto.getPublicKeyPem();
     if (userId != null && publicKey.isNotEmpty) {
-      await _userApi.registerUser(userId, publicKey);
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final signature = await _crypto.sign('$userId|$timestamp');
+      
+      await _userApi.registerUser(
+        userId: userId,
+        publicKeyPem: publicKey,
+        signature: signature,
+        timestamp: timestamp,
+      );
     }
   }
 

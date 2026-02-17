@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class SecureStorage {
@@ -7,6 +8,10 @@ class SecureStorage {
     ),
     iOptions: IOSOptions(
       accessibility: KeychainAccessibility.first_unlock,
+    ),
+    webOptions: WebOptions(
+      dbName: 'VaultChatStorage',
+      publicKey: 'VaultChatSecure',
     ),
   );
 
@@ -18,11 +23,12 @@ class SecureStorage {
   static Future<void> initialize() async {
     // Test storage availability
     try {
-      await _storage.read(key: 'test');
-      print('✓ Secure storage initialized');
+      await _storage.read(key: 'vault_health_check');
+      debugPrint('✓ Secure storage initialized');
     } catch (e) {
-      print('❌ Secure storage error: $e');
-      throw Exception('Secure storage not available: $e');
+      debugPrint('❌ Secure storage error: $e. Using fallback.');
+      // On some web environments, specialized storage might fail.
+      // We don't throw here to allow Hive (which is our main DB) to at least try.
     }
   }
 
@@ -79,6 +85,15 @@ class SecureStorage {
   static Future<void> clearAll() async {
     await _storage.deleteAll();
     print('✓ All secure storage cleared');
+  }
+
+  // Generic storage
+  static Future<void> write(String key, String value) async {
+    await _storage.write(key: key, value: value);
+  }
+
+  static Future<String?> get(String key) async {
+    return await _storage.read(key: key);
   }
 
   // Delete specific key

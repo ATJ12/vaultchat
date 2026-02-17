@@ -33,6 +33,12 @@ class PrivacySettingsScreen extends ConsumerWidget {
             title: 'Zero-Knowledge Architecture',
             subtitle: 'Server never sees your messages',
           ),
+          const _InfoTile(
+            icon: Icons.storage_rounded,
+            title: 'Hardware-Grade Local Security',
+            subtitle: 'Stretched via PBKDF2 (100,000 iterations)',
+            trailing: Icon(Icons.verified_user, color: Colors.blueAccent),
+          ),
           
           const Divider(),
           const _SectionHeader(title: 'Key Management'),
@@ -159,102 +165,124 @@ class _RegenerateKeysTile extends StatelessWidget {
       title: const Text('Regenerate Identity Keys'),
       subtitle: const Text('Create new encryption keys (old messages will be lost)'),
       onTap: () {
+        String regUserId = '';
+        String regPassphrase = '';
+
         showDialog(
           context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Regenerate Keys?'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'This will:',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                const Text('✓ Generate new encryption keys'),
-                const Text('✓ Register you as a new user'),
-                const SizedBox(height: 16),
-                const Text(
-                  'Warning:',
-                  style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange),
-                ),
-                const SizedBox(height: 8),
-                const Text('✗ You cannot decrypt old messages'),
-                const Text('✗ Others cannot send to your old identity'),
-                const Text('✗ All local message history will be cleared'),
-                const SizedBox(height: 16),
-                TextField(
-                  decoration: const InputDecoration(
-                    labelText: 'New User ID (optional)',
-                    hintText: 'Leave empty for auto-generated',
+          builder: (context) => StatefulBuilder(
+            builder: (context, setDialogState) => AlertDialog(
+              title: const Text('Regenerate Keys?'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'This will:',
+                    style: TextStyle(fontWeight: FontWeight.bold),
                   ),
-                  onChanged: (value) {
-                    // Store in temporary variable
+                  const SizedBox(height: 8),
+                  const Text('✓ Generate new encryption keys'),
+                  const Text('✓ Register you as a new user'),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Warning:',
+                    style: TextStyle(fontWeight: FontWeight.bold, color: Colors.orange),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('✗ You cannot decrypt old messages'),
+                  const Text('✗ Others cannot send to your old identity'),
+                  const Text('✗ All local message history will be cleared'),
+                  const SizedBox(height: 16),
+                  TextField(
+                    decoration: const InputDecoration(
+                      labelText: 'New User ID (optional)',
+                      hintText: 'Leave empty for current ID',
+                    ),
+                    onChanged: (value) => regUserId = value,
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Vault Passphrase',
+                      hintText: 'Enter a strong passphrase',
+                      helperText: 'Required for local data encryption',
+                    ),
+                    onChanged: (value) => regPassphrase = value,
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () async {
+                    if (regPassphrase.length < 8) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Passphrase must be at least 8 characters')),
+                      );
+                      return;
+                    }
+                    Navigator.pop(context);
+                    
+                    // Show loading
+                    showDialog(
+                      context: context,
+                      barrierDismissible: false,
+                      builder: (context) => const AlertDialog(
+                        content: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            CircularProgressIndicator(),
+                            SizedBox(height: 16),
+                            Text('Regenerating keys...'),
+                          ],
+                        ),
+                      ),
+                    );
+                    
+                    try {
+                      // Clear old keys and cache
+                      await CryptoManager.instance.clearKeys();
+                      await MessageCache.clearAll();
+                      
+                      // Generate new keys
+                      await ref.read(authProvider.notifier).generateIdentity(
+                        customUserId: regUserId.isEmpty ? null : regUserId,
+                        passphrase: regPassphrase,
+                      );
+                      
+                      if (context.mounted) {
+                        Navigator.pop(context); // Close loading
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('✓ New keys generated successfully!'),
+                            backgroundColor: Colors.green,
+                          ),
+                        );
+                      }
+                    } catch (e) {
+                      if (context.mounted) {
+                        Navigator.pop(context); // Close loading
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Failed to regenerate keys: $e'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
+                    }
                   },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.orange,
+                  ),
+                  child: const Text('Regenerate'),
                 ),
               ],
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Cancel'),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  Navigator.pop(context);
-                  
-                  // Show loading
-                  showDialog(
-                    context: context,
-                    barrierDismissible: false,
-                    builder: (context) => const AlertDialog(
-                      content: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          CircularProgressIndicator(),
-                          SizedBox(height: 16),
-                          Text('Regenerating keys...'),
-                        ],
-                      ),
-                    ),
-                  );
-                  
-                  try {
-                    // Clear old keys and cache
-                    await CryptoManager.instance.clearKeys();
-                    await MessageCache.clearAll();
-                    
-                    // Generate new keys
-                    await ref.read(authProvider.notifier).generateIdentity();
-                    
-                    if (context.mounted) {
-                      Navigator.pop(context); // Close loading
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('✓ New keys generated successfully!'),
-                          backgroundColor: Colors.green,
-                        ),
-                      );
-                    }
-                  } catch (e) {
-                    if (context.mounted) {
-                      Navigator.pop(context); // Close loading
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Failed to regenerate keys: $e'),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
-                    }
-                  }
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.orange,
-                ),
-                child: const Text('Regenerate'),
-              ),
-            ],
           ),
         );
       },

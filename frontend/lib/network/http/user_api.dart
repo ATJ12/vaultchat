@@ -5,13 +5,17 @@ import 'api_client.dart';
 class UserApi {
   final _client = ApiClient.instance;
 
-  Future<void> registerUser(String userId, String publicKeyPem) async {
-    // The backend expects the raw PEM string encoded as base64
-    final publicKeyBase64 = base64Encode(utf8.encode(publicKeyPem));
-    
+  Future<void> registerUser({
+    required String userId,
+    required String publicKeyPem,
+    required String signature,
+    required String timestamp,
+  }) async {
     await _client.post('/users/register', data: {
       'user_id': userId,
-      'public_key': publicKeyBase64,
+      'public_key': publicKeyPem,
+      'signature': signature,
+      'timestamp': timestamp,
     });
   }
 

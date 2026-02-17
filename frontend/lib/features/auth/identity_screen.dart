@@ -12,11 +12,14 @@ class IdentityScreen extends ConsumerStatefulWidget {
 
 class _IdentityScreenState extends ConsumerState<IdentityScreen> {
   final _userIdController = TextEditingController();
+  final _passphraseController = TextEditingController();
   bool _isGenerating = false;
+  bool _obscurePassphrase = true;
 
   @override
   void dispose() {
     _userIdController.dispose();
+    _passphraseController.dispose();
     super.dispose();
   }
 
@@ -60,12 +63,23 @@ class _IdentityScreenState extends ConsumerState<IdentityScreen> {
 
     try {
       final customUserId = _userIdController.text.trim();
+      final passphrase = _passphraseController.text;
+
+      if (passphrase.length < 8) {
+        if (mounted) Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Passphrase must be at least 8 characters')),
+        );
+        setState(() => _isGenerating = false);
+        return;
+      }
       
       // Let the dialog render fully before the CPU heavy task
       await Future.delayed(const Duration(milliseconds: 800));
       
       await ref.read(authProvider.notifier).generateIdentity(
             customUserId: customUserId.isEmpty ? null : customUserId,
+            passphrase: passphrase,
           );
       
       if (mounted) Navigator.of(context).pop(); // Close dialog
@@ -132,6 +146,33 @@ class _IdentityScreenState extends ConsumerState<IdentityScreen> {
                       ),
                     ),
                   ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _passphraseController,
+                    obscureText: _obscurePassphrase,
+                    decoration: InputDecoration(
+                      labelText: 'Vault Passphrase',
+                      hintText: 'Min. 8 characters',
+                      prefixIcon: const Icon(Icons.lock_outline),
+                      suffixIcon: IconButton(
+                        icon: Icon(_obscurePassphrase ? Icons.visibility_off : Icons.visibility),
+                        onPressed: () => setState(() => _obscurePassphrase = !_obscurePassphrase),
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      helperText: 'Required for local data encryption.',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '⚠️ Loss of this passphrase means loss of all chat history.',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Theme.of(context).colorScheme.error,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                   const SizedBox(height: 24),
                   ElevatedButton(
                     onPressed: _isGenerating ? null : _generateIdentity,
@@ -152,9 +193,9 @@ class _IdentityScreenState extends ConsumerState<IdentityScreen> {
                     desc: 'Keys are generated and stored only on your device.',
                   ),
                   const _InfoTile(
-                    icon: Icons.no_accounts,
-                    title: 'Zero-Knowledge',
-                    desc: 'The server never sees your private keys or messages.',
+                    icon: Icons.storage_rounded,
+                    title: 'Hardware-Grade Security',
+                    desc: 'Local database is secured with PBKDF2 (100k rounds).',
                   ),
                 ],
               ),

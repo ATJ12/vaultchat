@@ -5,8 +5,24 @@ class MessageCache {
   static const String _boxName = 'messages';
   static Box<Map>? _box;
 
-  static Future<void> initialize() async {
-    _box = await Hive.openBox<Map>(_boxName);
+  static Future<void> initialize({List<int>? encryptionKey}) async {
+    try {
+      if (encryptionKey != null) {
+        _box = await Hive.openBox<Map>(_boxName, encryptionCipher: HiveAesCipher(encryptionKey));
+      } else {
+        _box = await Hive.openBox<Map>(_boxName);
+      }
+    } catch (e) {
+      print('⚠️ Failed to open message box (possible encryption mismatch): $e');
+      // If opening with encryption fails, the box might be unencrypted from a previous session.
+      // We must delete it to proceed (as data is considered corrupted/insecure now).
+      await Hive.deleteBoxFromDisk(_boxName);
+      if (encryptionKey != null) {
+        _box = await Hive.openBox<Map>(_boxName, encryptionCipher: HiveAesCipher(encryptionKey));
+      } else {
+        _box = await Hive.openBox<Map>(_boxName);
+      }
+    }
   }
 
   static Future<void> saveMessage(ChatMessage message) async {
