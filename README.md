@@ -1,3 +1,5 @@
+![VaultChat Banner](assets/banner.jpg)
+
 # 🔐 VaultChat
 
 VaultChat is a **zero-knowledge, end-to-end encrypted (E2EE) messaging application** designed for total privacy and metadata security. It ensures that even the server provider has no access to your messages, identity, or activity indicators.
